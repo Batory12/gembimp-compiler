@@ -4,12 +4,18 @@ from typing import List, Optional, Union
 
 
 class ASTNode(ABC):
-    pass
+    """Base class for all AST nodes"""
+    def accept(self, visitor):
+        """Accept a visitor - must be implemented by subclasses"""
+        raise NotImplementedError(f"accept() not implemented for {type(self).__name__}")
 
 
 @dataclass
 class Identifier(ASTNode):
     name: str
+    
+    def accept(self, visitor):
+        return visitor.visit_identifier(self)
 
 
 @dataclass
@@ -17,6 +23,9 @@ class Access(ASTNode):
     """Array access: array_name[index]"""
     name: str
     index: 'Value'  # The index expression (can be a variable, number, or expression)
+    
+    def accept(self, visitor):
+        return visitor.visit_access(self)
 
 
 # Expression nodes
@@ -29,6 +38,9 @@ class Expression(ASTNode):
 class Value(Expression):
     """Expression representing a single value (number, identifier, or array access)"""
     value: Union[int, Identifier, Access]
+    
+    def accept(self, visitor):
+        return visitor.visit_value(self)
 
 
 @dataclass
@@ -37,6 +49,9 @@ class BinaryExpression(Expression):
     operator: str  # '+', '-', '*', '/', '%'
     left: Expression
     right: Expression
+    
+    def accept(self, visitor):
+        return visitor.visit_binary_expression(self)
 
 
 # Condition nodes
@@ -45,6 +60,9 @@ class Condition(ASTNode):
     operator: str  # '=', '!=', '>', '<', '>=', '<='
     left: Value
     right: Value
+    
+    def accept(self, visitor):
+        return visitor.visit_condition(self)
 
 
 # Statement nodes
@@ -58,6 +76,9 @@ class Statement(ASTNode):
 class AssignCommand(Statement):
     identifier: Union[Identifier, 'Access']
     expression: Expression
+    
+    def accept(self, visitor):
+        return visitor.visit_assign(self)
 
 
 @dataclass
@@ -65,18 +86,27 @@ class IfCommand(Statement):
     condition: Condition
     then_commands: List['Command']
     else_commands: Optional[List['Command']] = None
+    
+    def accept(self, visitor):
+        return visitor.visit_if(self)
 
 
 @dataclass
 class WhileCommand(Statement):
     condition: Condition
     commands: List['Command']
+    
+    def accept(self, visitor):
+        return visitor.visit_while(self)
 
 
 @dataclass
 class RepeatCommand(Statement):
     commands: List['Command']
     condition: Condition
+    
+    def accept(self, visitor):
+        return visitor.visit_repeat(self)
 
 
 @dataclass
@@ -86,22 +116,34 @@ class ForCommand(Statement):
     to_val: Value
     commands: List['Command']
     downto: bool = False
+    
+    def accept(self, visitor):
+        return visitor.visit_for(self)
 
 
 @dataclass
 class ProcCallCommand(Statement):
     name: str
     args: List[str]
+    
+    def accept(self, visitor):
+        return visitor.visit_proc_call(self)
 
 
 @dataclass
 class ReadCommand(Statement):
     identifier: Union[Identifier, 'Access']
+    
+    def accept(self, visitor):
+        return visitor.visit_read(self)
 
 
 @dataclass
 class WriteCommand(Statement):
     value: Value
+    
+    def accept(self, visitor):
+        return visitor.visit_write(self)
 
 
 Command = Union[AssignCommand, IfCommand, WhileCommand, RepeatCommand, ForCommand, ProcCallCommand, ReadCommand, WriteCommand]
@@ -112,6 +154,9 @@ Command = Union[AssignCommand, IfCommand, WhileCommand, RepeatCommand, ForComman
 class Declaration(ASTNode):
     name: str
     array_range: Optional[tuple] = None  # (start, end) tuple or None
+    
+    def accept(self, visitor):
+        return visitor.visit_declaration(self)
 
 
 # Procedure argument declaration
@@ -119,12 +164,18 @@ class Declaration(ASTNode):
 class ArgDecl(ASTNode):
     arg_type: Optional[str]  # type is 'T', 'I', 'O', or None (empty)
     name: str
+    
+    def accept(self, visitor):
+        return visitor.visit_arg_decl(self)
 
 
 @dataclass
 class ProcHead(ASTNode):
     name: str
     args: List[ArgDecl]
+    
+    def accept(self, visitor):
+        return visitor.visit_proc_head(self)
 
 
 @dataclass
@@ -132,18 +183,27 @@ class Procedure(ASTNode):
     head: ProcHead
     declarations: List[Declaration]
     commands: List[Command]
+    
+    def accept(self, visitor):
+        return visitor.visit_procedure(self)
 
 
 @dataclass
 class Main(ASTNode):
     declarations: List[Declaration]
     commands: List[Command]
+    
+    def accept(self, visitor):
+        return visitor.visit_main(self)
 
 
 @dataclass
 class Program(ASTNode):
     procedures: List[Procedure]
     main: Main
+    
+    def accept(self, visitor):
+        return visitor.visit_program(self)
 
 
 def display_ast(node: ASTNode, indent: int = 0) -> str:

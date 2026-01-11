@@ -6,6 +6,7 @@ Uses dataclass and enum approach for type safety and consistency with AST nodes.
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional, Union
+from visitor import ASTVisitor
 from ast_nodes import (
     Program, Procedure, Main, Declaration,
     AssignCommand, IfCommand, WhileCommand, RepeatCommand, ForCommand,
@@ -104,14 +105,11 @@ def display_tac(instructions: List[TACInstruction]) -> str:
     return "\n".join(lines)
 
 
-class TACGenerator:
-    """Generator for three-address code from AST.
-    
-    This is a stub implementation. The actual generation logic should be
-    implemented to traverse the AST and emit TAC instructions.
-    """
+class TACGenerator(ASTVisitor):
+    """Visitor that generates three-address code from AST."""
     
     def __init__(self):
+        super().__init__()
         self.instructions: List[TACInstruction] = []
         self.temp_counter = 0
         self.label_counter = 0
@@ -135,63 +133,49 @@ class TACGenerator:
         """Emit a TAC instruction"""
         self.instructions.append(TACInstruction(op, result, arg1, arg2, label))
     
-    def generate(self, ast):
-        """Generate TAC from AST."""
+    def generate(self, ast: Program) -> List[TACInstruction]:
+        """Generate TAC from AST. Main entry point."""
         self.instructions = []
-        if isinstance(ast, Program):
-            # Generate TAC for main program first
-            self.generate_main(ast.main)
-            # Then generate procedures
-            for proc in ast.procedures:
-                self.generate_procedure(proc)
-        else:
-            raise ValueError(f"Unsupported AST node type: {type(ast)}")
+        self.temp_counter = 0
+        self.label_counter = 0
+        self.visit_program(ast)
         return self.instructions
     
-    def generate_main(self, main_node: Main):
-        """Generate TAC for main program"""
-        # Declarations don't generate code, they're just metadata
-        for cmd in main_node.commands:
-            self.generate_command(cmd)
+    def visit_program(self, node: Program):
+        """Visit Program node - generate main first, then procedures"""
+        # Generate TAC for main program first
+        self.visit_main(node.main)
+        # Then generate procedures
+        for proc in node.procedures:
+            self.visit_procedure(proc)
     
-    def generate_procedure(self, proc_node: Procedure):
-        """Generate TAC for a procedure"""
+    def visit_main(self, node: Main):
+        """Visit Main node - declarations don't generate code"""
+        # Declarations don't generate code, they're just metadata
+        for cmd in node.commands:
+            cmd.accept(self)
+    
+    def visit_procedure(self, node: Procedure):
+        """Visit Procedure node"""
         # Procedure label
-        proc_label = f"proc_{proc_node.head.name}"
+        proc_label = f"proc_{node.head.name}"
         self.emit(TACOp.LABEL, label=proc_label)
         
         # Generate procedure body
-        for cmd in proc_node.commands:
-            self.generate_command(cmd)
+        for cmd in node.commands:
+            cmd.accept(self)
         
         # Return statement
         self.emit(TACOp.RET)
     
-    def generate_command(self, cmd):
-        """Generate TAC for a command"""
-        if isinstance(cmd, AssignCommand):
-            self.generate_assign(cmd)
-        elif isinstance(cmd, IfCommand):
-            self.generate_if(cmd)
-        elif isinstance(cmd, WhileCommand):
-            self.generate_while(cmd)
-        elif isinstance(cmd, RepeatCommand):
-            self.generate_repeat(cmd)
-        elif isinstance(cmd, ForCommand):
-            self.generate_for(cmd)
-        elif isinstance(cmd, ProcCallCommand):
-            self.generate_proc_call(cmd)
-        elif isinstance(cmd, ReadCommand):
-            self.generate_read(cmd)
-        elif isinstance(cmd, WriteCommand):
-            self.generate_write(cmd)
-        else:
-            raise ValueError(f"Unsupported command type: {type(cmd)}")
+    def visit_command(self, cmd):
+        """Dispatch to specific command visitor"""
+        cmd.accept(self)
     
-    def generate_assign(self, cmd: AssignCommand):
-        """Generate TAC for assignment"""
+    def visit_assign(self, cmd: AssignCommand):
+        """Visit AssignCommand - generate TAC for assignment"""
         # Evaluate the expression
-        expr_temp = self.generate_expression(cmd.expression)
+        expr_temp = self.visit_expression(cmd.expression)
         
         # Assign to target
         if isinstance(cmd.identifier, Identifier):
@@ -199,13 +183,13 @@ class TACGenerator:
             self.emit(TACOp.ASSIGN, result=cmd.identifier.name, arg1=expr_temp)
         elif isinstance(cmd.identifier, Access):
             # Array assignment
-            index_temp = self.generate_value(cmd.identifier.index)
+            index_temp = self.visit_value(cmd.identifier.index)
             self.emit(TACOp.STORE_ARRAY, arg1=cmd.identifier.name, arg2=index_temp, result=expr_temp)
         else:
             raise ValueError(f"Unsupported identifier type: {type(cmd.identifier)}")
     
-    def generate_if(self, cmd: IfCommand):
-        """Generate TAC for IF statement"""
+    def visit_if(self, cmd: IfCommand):
+        """Visit IfCommand - generate TAC for IF statement"""
         then_label = self.new_label()
         else_label = self.new_label() if cmd.else_commands else None
         end_label = self.new_label()
@@ -216,7 +200,7 @@ class TACGenerator:
         # THEN block
         self.emit(TACOp.LABEL, label=then_label)
         for then_cmd in cmd.then_commands:
-            self.generate_command(then_cmd)
+            then_cmd.accept(self)
         
         if else_label:
             # Jump over ELSE block
@@ -224,13 +208,13 @@ class TACGenerator:
             # ELSE block
             self.emit(TACOp.LABEL, label=else_label)
             for else_cmd in cmd.else_commands:
-                self.generate_command(else_cmd)
+                else_cmd.accept(self)
         
         # End label
         self.emit(TACOp.LABEL, label=end_label)
     
-    def generate_while(self, cmd: WhileCommand):
-        """Generate TAC for WHILE loop"""
+    def visit_while(self, cmd: WhileCommand):
+        """Visit WhileCommand - generate TAC for WHILE loop"""
         loop_label = self.new_label()
         body_label = self.new_label()
         end_label = self.new_label()
@@ -246,7 +230,7 @@ class TACGenerator:
         
         # Loop body
         for body_cmd in cmd.commands:
-            self.generate_command(body_cmd)
+            body_cmd.accept(self)
         
         # Jump back to condition check
         self.emit(TACOp.GOTO, label=loop_label)
@@ -254,8 +238,8 @@ class TACGenerator:
         # End label (reached when condition is false)
         self.emit(TACOp.LABEL, label=end_label)
     
-    def generate_repeat(self, cmd: RepeatCommand):
-        """Generate TAC for REPEAT loop"""
+    def visit_repeat(self, cmd: RepeatCommand):
+        """Visit RepeatCommand - generate TAC for REPEAT loop"""
         loop_label = self.new_label()
         end_label = self.new_label()
         
@@ -264,7 +248,7 @@ class TACGenerator:
         
         # Loop body
         for body_cmd in cmd.commands:
-            self.generate_command(body_cmd)
+            body_cmd.accept(self)
         
         # Check condition - continue if false, exit if true
         # REPEAT ... UNTIL condition means: repeat until condition is true
@@ -274,14 +258,14 @@ class TACGenerator:
         # End label (reached when condition is true)
         self.emit(TACOp.LABEL, label=end_label)
     
-    def generate_for(self, cmd: ForCommand):
-        """Generate TAC for FOR loop"""
+    def visit_for(self, cmd: ForCommand):
+        """Visit ForCommand - generate TAC for FOR loop"""
         loop_label = self.new_label()
         end_label = self.new_label()
         
         # Evaluate from and to values
-        from_temp = self.generate_value(cmd.from_val)
-        to_temp = self.generate_value(cmd.to_val)
+        from_temp = self.visit_value(cmd.from_val)
+        to_temp = self.visit_value(cmd.to_val)
         
         # Initialize loop variable
         self.emit(TACOp.ASSIGN, result=cmd.var, arg1=from_temp)
@@ -305,7 +289,7 @@ class TACGenerator:
         
         # Loop body (reached only if condition passed)
         for body_cmd in cmd.commands:
-            self.generate_command(body_cmd)
+            body_cmd.accept(self)
         
         # Increment/decrement loop variable
         if cmd.downto:
@@ -323,8 +307,8 @@ class TACGenerator:
         # End label
         self.emit(TACOp.LABEL, label=end_label)
     
-    def generate_proc_call(self, cmd: ProcCallCommand):
-        """Generate TAC for procedure call"""
+    def visit_proc_call(self, cmd: ProcCallCommand):
+        """Visit ProcCallCommand - generate TAC for procedure call"""
         # Push parameters (for now, just call - parameter passing may need more work)
         for arg in cmd.args:
             self.emit(TACOp.PARAM, arg1=arg)
@@ -332,63 +316,69 @@ class TACGenerator:
         # Call procedure
         self.emit(TACOp.CALL, arg1=cmd.name)
     
-    def generate_read(self, cmd: ReadCommand):
-        """Generate TAC for READ statement"""
+    def visit_read(self, cmd: ReadCommand):
+        """Visit ReadCommand - generate TAC for READ statement"""
         if isinstance(cmd.identifier, Identifier):
             self.emit(TACOp.READ, arg1=cmd.identifier.name)
         elif isinstance(cmd.identifier, Access):
-            index_temp = self.generate_value(cmd.identifier.index)
+            index_temp = self.visit_value(cmd.identifier.index)
             self.emit(TACOp.READ_ARRAY, arg1=cmd.identifier.name, arg2=index_temp)
         else:
             raise ValueError(f"Unsupported identifier type: {type(cmd.identifier)}")
     
-    def generate_write(self, cmd: WriteCommand):
-        """Generate TAC for WRITE statement"""
-        value_temp = self.generate_value(cmd.value)
+    def visit_write(self, cmd: WriteCommand):
+        """Visit WriteCommand - generate TAC for WRITE statement"""
+        value_temp = self.visit_value(cmd.value)
         self.emit(TACOp.WRITE, arg1=value_temp)
     
-    def generate_expression(self, expr: Expression) -> str:
-        """Generate TAC for expression, return temp variable name with result"""
-        if isinstance(expr, Value):
-            return self.generate_value(expr)
-        elif isinstance(expr, BinaryExpression):
-            left_temp = self.generate_expression(expr.left)
-            right_temp = self.generate_expression(expr.right)
-            result_temp = self.new_temp()
-            
-            # Map operator to TACOp
-            op_map = {
-                '+': TACOp.ADD,
-                '-': TACOp.SUB,
-                '*': TACOp.MUL,
-                '/': TACOp.DIV,
-                '%': TACOp.MOD
-            }
-            op = op_map.get(expr.operator)
-            if op is None:
-                raise ValueError(f"Unsupported binary operator: {expr.operator}")
-            
-            self.emit(op, result=result_temp, arg1=left_temp, arg2=right_temp)
-            return result_temp
-        else:
-            raise ValueError(f"Unsupported expression type: {type(expr)}")
+    def visit_expression(self, expr: Expression) -> str:
+        """Visit Expression - generate TAC, return temp variable name with result"""
+        return expr.accept(self)
     
-    def generate_value(self, value: Value) -> str:
-        """Generate TAC for value, return variable name or constant"""
+    def visit_binary_expression(self, node: BinaryExpression) -> str:
+        """Visit BinaryExpression - generate TAC for binary operation"""
+        left_temp = self.visit_expression(node.left)
+        right_temp = self.visit_expression(node.right)
+        result_temp = self.new_temp()
+        
+        # Map operator to TACOp
+        op_map = {
+            '+': TACOp.ADD,
+            '-': TACOp.SUB,
+            '*': TACOp.MUL,
+            '/': TACOp.DIV,
+            '%': TACOp.MOD
+        }
+        op = op_map.get(node.operator)
+        if op is None:
+            raise ValueError(f"Unsupported binary operator: {node.operator}")
+        
+        self.emit(op, result=result_temp, arg1=left_temp, arg2=right_temp)
+        return result_temp
+    
+    def visit_value(self, value: Value) -> str:
+        """Visit Value - generate TAC, return variable name or constant"""
         if isinstance(value.value, int):
             # For constants, we'll just return the string representation
             # The TAC generator/optimizer can handle this later
             return str(value.value)
         elif isinstance(value.value, Identifier):
-            return value.value.name
+            return self.visit_identifier(value.value)
         elif isinstance(value.value, Access):
-            # Array access - load array element
-            index_temp = self.generate_value(value.value.index)
-            result_temp = self.new_temp()
-            self.emit(TACOp.LOAD_ARRAY, arg1=value.value.name, arg2=index_temp, result=result_temp)
-            return result_temp
+            return self.visit_access(value.value)
         else:
             raise ValueError(f"Unsupported value type: {type(value.value)}")
+    
+    def visit_identifier(self, node: Identifier) -> str:
+        """Visit Identifier - return variable name"""
+        return node.name
+    
+    def visit_access(self, node: Access) -> str:
+        """Visit Access - generate TAC for array access"""
+        index_temp = self.visit_value(node.index)
+        result_temp = self.new_temp()
+        self.emit(TACOp.LOAD_ARRAY, arg1=node.name, arg2=index_temp, result=result_temp)
+        return result_temp
     
     def generate_condition_jump(self, condition: Condition, true_label: str, false_label: str):
         """Generate TAC for condition check and jump
@@ -398,8 +388,8 @@ class TACGenerator:
             true_label: Label to jump to if condition is true
             false_label: Label to jump to if condition is false
         """
-        left_temp = self.generate_value(condition.left)
-        right_temp = self.generate_value(condition.right)
+        left_temp = self.visit_value(condition.left)
+        right_temp = self.visit_value(condition.right)
         
         # Direct comparison and jump using IF instruction
         # Format: IF arg1 operator result GOTO label
