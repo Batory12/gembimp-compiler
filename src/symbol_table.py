@@ -37,6 +37,8 @@ class Symbol:
     param_names: Optional[List[str]] = None  # Names of formal parameters
     # For procedure parameters
     param_type: Optional[ParamType] = None  # Type of this parameter (if this is a parameter)
+    # For OUTPUT parameters - track if they've been assigned
+    output_assigned: bool = False  # True if OUTPUT parameter has been assigned
     # Scope information
     scope_level: int = 0  # 0 = global, 1+ = nested scopes
     declared_at_line: Optional[int] = None  # For error reporting
@@ -97,7 +99,7 @@ class SymbolTable:
         
         self.current_procedure = proc_name
         self.procedure_symbols[proc_name] = {}
-        self.procedure_order.append(proc_name)
+        # Note: procedure_order is now populated in add_procedure, not here
         self.scope_level = 1
     
     def exit_procedure_scope(self):
@@ -275,6 +277,8 @@ class SymbolTable:
             declared_at_line=line
         )
         self.global_symbols[name] = symbol
+        # Add to procedure_order to track declaration order for forward reference checking
+        self.procedure_order.append(name)
         return symbol
     
     def lookup(self, name: str) -> Optional[Symbol]:
@@ -413,7 +417,7 @@ class SymbolTable:
                     f"Parameter '{name}' marked with 'I' cannot be modified",
                     line
                 )
-            if symbol.param_type == ParamType.OUTPUT and is_read:
+            if symbol.param_type == ParamType.OUTPUT and is_read and not symbol.output_assigned:
                 raise SymbolTableError(
                     f"Parameter '{name}' marked with 'O' cannot be read before assignment",
                     line
@@ -427,6 +431,22 @@ class SymbolTable:
             )
         
         return symbol
+    
+    def mark_output_assigned(self, name: str, line: Optional[int] = None):
+        """Mark a parameter as assigned (for OUTPUT propagation)
+        
+        Args:
+            name: Variable name
+            line: Line number for error reporting (optional)
+            
+        Raises:
+            SymbolTableError: If variable is not found
+        """
+        symbol = self.lookup_required(name, line)
+        
+        if symbol.is_parameter():
+            # Mark as assigned - this tracks assignment for OUTPUT propagation
+            symbol.output_assigned = True
     
     def check_array_access(self, name: str, index: int, line: Optional[int] = None) -> Symbol:
         """Check if an array access is valid

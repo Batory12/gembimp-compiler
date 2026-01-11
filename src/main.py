@@ -1,6 +1,7 @@
 from lexer import CompilerLexer, LexicalError
 from parser import CompilerParser
 from ast_nodes import display_ast
+from semantic_analyzer import SemanticAnalyzer
 from tac import TACGenerator, display_tac
 import sys
 import os
@@ -19,9 +20,15 @@ def main():
     
     lexer = CompilerLexer()
     parser = CompilerParser()
+    analyzer = SemanticAnalyzer()
     
     try:
         ast = parser.parse(lexer.tokenize(text))
+        errors = analyzer.analyze(ast)
+        if errors:
+            for error in errors:
+                print(error, file=sys.stderr)
+            sys.exit(1)
         
         # Generate TAC
         tac_gen = TACGenerator()

@@ -58,59 +58,59 @@ class CompilerParser(Parser):
     
     @_('identifier ASSIGN expression SEMICOLON')
     def command(self, p):
-        return AssignCommand(p.identifier, p.expression)
+        return AssignCommand(p.identifier, p.expression, line=p.lineno)
     
     @_('IF condition THEN commands ELSE commands ENDIF')
     def command(self, p):
-        return IfCommand(p.condition, p.commands0, p.commands1)
+        return IfCommand(p.condition, p.commands0, p.commands1, line=p.lineno)
     
     @_('IF condition THEN commands ENDIF')
     def command(self, p):
-        return IfCommand(p.condition, p.commands, None)
+        return IfCommand(p.condition, p.commands, None, line=p.lineno)
     
     @_('WHILE condition DO commands ENDWHILE')
     def command(self, p):
-        return WhileCommand(p.condition, p.commands)
+        return WhileCommand(p.condition, p.commands, line=p.lineno)
     
     @_('REPEAT commands UNTIL condition SEMICOLON')
     def command(self, p):
-        return RepeatCommand(p.commands, p.condition)
+        return RepeatCommand(p.commands, p.condition, line=p.lineno)
     
     @_('FOR PIDENTIFIER FROM value TO value DO commands ENDFOR')
     def command(self, p):
-        return ForCommand(p.PIDENTIFIER, p.value0, p.value1, p.commands, False)
+        return ForCommand(p.PIDENTIFIER, p.value0, p.value1, p.commands, False, line=p.lineno)
     
     @_('FOR PIDENTIFIER FROM value DOWNTO value DO commands ENDFOR')
     def command(self, p):
-        return ForCommand(p.PIDENTIFIER, p.value0, p.value1, p.commands, True)
+        return ForCommand(p.PIDENTIFIER, p.value0, p.value1, p.commands, True, line=p.lineno)
     
     @_('PIDENTIFIER LPAREN args RPAREN SEMICOLON')
     def command(self, p):
-        return ProcCallCommand(p.PIDENTIFIER, p.args)
+        return ProcCallCommand(p.PIDENTIFIER, p.args, line=p.lineno)
     
     @_('READ identifier SEMICOLON')
     def command(self, p):
-        return ReadCommand(p.identifier)
+        return ReadCommand(p.identifier, line=p.lineno)
     
     @_('WRITE value SEMICOLON')
     def command(self, p):
-        return WriteCommand(p.value)
+        return WriteCommand(p.value, line=p.lineno)
     
     @_('PIDENTIFIER LPAREN RPAREN')
     def proc_head(self, p):
-        return ProcHead(p.PIDENTIFIER, [])
+        return ProcHead(p.PIDENTIFIER, [], line=p.lineno)
     
     @_('PIDENTIFIER LPAREN args_decl RPAREN')
     def proc_head(self, p):
-        return ProcHead(p.PIDENTIFIER, p.args_decl)
+        return ProcHead(p.PIDENTIFIER, p.args_decl, line=p.lineno)
     
     @_('args_decl COMMA type PIDENTIFIER')
     def args_decl(self, p):
-        return p.args_decl + [ArgDecl(p.type, p.PIDENTIFIER)]
+        return p.args_decl + [ArgDecl(p.type, p.PIDENTIFIER, line=p.lineno)]
     
     @_('type PIDENTIFIER')
     def args_decl(self, p):
-        return [ArgDecl(p.type, p.PIDENTIFIER)]
+        return [ArgDecl(p.type, p.PIDENTIFIER, line=p.lineno)]
     
     @_('TYPE_T')
     def type(self, p):
@@ -146,11 +146,11 @@ class CompilerParser(Parser):
     
     @_('PIDENTIFIER')
     def declaration_item(self, p):
-        return Declaration(p.PIDENTIFIER)
+        return Declaration(p.PIDENTIFIER, line=p.lineno)
     
     @_('PIDENTIFIER LBRACKET NUM COLON NUM RBRACKET')
     def declaration_item(self, p):
-        return Declaration(p.PIDENTIFIER, (int(p.NUM0), int(p.NUM1)))
+        return Declaration(p.PIDENTIFIER, (int(p.NUM0), int(p.NUM1)), line=p.lineno)
     
     @_('value PLUS value')
     def expression(self, p):

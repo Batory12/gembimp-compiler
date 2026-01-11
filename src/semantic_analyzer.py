@@ -142,6 +142,8 @@ class SemanticAnalyzer(ASTVisitor):
     
     def visit_arg_decl(self, node: ArgDecl):
         """Visit ArgDecl node - add parameter to symbol table"""
+        # Extract line number from node
+        self.current_line = node.line
         param_name = node.name
         is_array = node.arg_type == 'T'
         
@@ -164,6 +166,8 @@ class SemanticAnalyzer(ASTVisitor):
     
     def visit_declaration(self, node: Declaration):
         """Visit Declaration node - add variable or array to symbol table"""
+        # Extract line number from node
+        self.current_line = node.line
         name = node.name
         
         if node.array_range:
@@ -182,12 +186,16 @@ class SemanticAnalyzer(ASTVisitor):
     
     def visit_assign(self, cmd: AssignCommand):
         """Visit AssignCommand - validate assignment"""
+        # Extract line number from node
+        self.current_line = cmd.line
         # Check if target is valid and can be written to
         if isinstance(cmd.identifier, Identifier):
             try:
                 symbol = self.symbol_table.check_variable_usage(
                     cmd.identifier.name, is_read=False, is_write=True, line=self.current_line
                 )
+                # Mark OUTPUT parameter as assigned
+                self.symbol_table.mark_output_assigned(cmd.identifier.name, self.current_line)
             except SymbolTableError as e:
                 self.errors.append(SemanticError(e.message, e.line))
                 return
@@ -212,6 +220,8 @@ class SemanticAnalyzer(ASTVisitor):
                     self.symbol_table.check_variable_usage(
                         cmd.identifier.name, is_read=False, is_write=True, line=self.current_line
                     )
+                    # Mark OUTPUT parameter as assigned (for arrays)
+                    self.symbol_table.mark_output_assigned(cmd.identifier.name, self.current_line)
                 except SymbolTableError as e:
                     self.errors.append(SemanticError(e.message, e.line))
             except SymbolTableError as e:
@@ -228,6 +238,8 @@ class SemanticAnalyzer(ASTVisitor):
     
     def visit_if(self, cmd: IfCommand):
         """Visit IfCommand"""
+        # Extract line number from node
+        self.current_line = cmd.line
         # Validate condition
         self.visit_condition(cmd.condition)
         
@@ -241,6 +253,8 @@ class SemanticAnalyzer(ASTVisitor):
     
     def visit_while(self, cmd: WhileCommand):
         """Visit WhileCommand"""
+        # Extract line number from node
+        self.current_line = cmd.line
         # Validate condition
         self.visit_condition(cmd.condition)
         
@@ -250,6 +264,8 @@ class SemanticAnalyzer(ASTVisitor):
     
     def visit_repeat(self, cmd: RepeatCommand):
         """Visit RepeatCommand"""
+        # Extract line number from node
+        self.current_line = cmd.line
         # Visit commands first
         for body_cmd in cmd.commands:
             self.visit_command(body_cmd)
@@ -259,6 +275,8 @@ class SemanticAnalyzer(ASTVisitor):
     
     def visit_for(self, cmd: ForCommand):
         """Visit ForCommand - validate FOR loop"""
+        # Extract line number from node
+        self.current_line = cmd.line
         iterator_name = cmd.var
         
         # Validate FROM and TO values
@@ -281,6 +299,8 @@ class SemanticAnalyzer(ASTVisitor):
     
     def visit_proc_call(self, cmd: ProcCallCommand):
         """Visit ProcCallCommand - validate procedure call"""
+        # Extract line number from node
+        self.current_line = cmd.line
         proc_name = cmd.name
         arg_count = len(cmd.args)
         
@@ -309,27 +329,34 @@ class SemanticAnalyzer(ASTVisitor):
                     self.errors.append(SemanticError(e.message, e.line))
                     continue
                 
-                # Rule 5: I parameters can only receive arguments from I positions
-                # (arguments that are I parameters or constants)
-                if param_type == ParamType.INPUT:
-                    # Argument must be an I parameter or a constant (number)
-                    # For now, we can't check if it's a constant from the AST structure
-                    # But we can check if it's an I parameter
-                    if arg_symbol.is_parameter() and arg_symbol.param_type != ParamType.INPUT:
+                # Rule 5: I parameters can only be passed to positions also marked with I
+                # (Normal variables can be passed to any position, but I parameters can only be passed to I positions)
+                if arg_symbol.is_parameter() and arg_symbol.param_type == ParamType.INPUT:
+                    # If argument is an I parameter, the parameter position must also be I
+                    if param_type != ParamType.INPUT:
                         self.errors.append(SemanticError(
-                            f"Parameter '{proc_symbol.param_names[i]}' marked with 'I' can only receive "
-                            f"arguments from 'I' positions, but '{arg_name}' is not marked with 'I'",
+                            f"Parameter '{arg_name}' marked with 'I' can only be passed to positions "
+                            f"also marked with 'I', but parameter '{proc_symbol.param_names[i]}' is not marked with 'I'",
                             self.current_line
                         ))
                 
-                # Rule 5: O parameters cannot be passed to subprocedure in place marked by I
-                if param_type == ParamType.INPUT and arg_symbol.is_parameter():
-                    if arg_symbol.param_type == ParamType.OUTPUT:
+                # Rule 5: O parameters cannot be passed to I positions
+                if arg_symbol.is_parameter() and arg_symbol.param_type == ParamType.OUTPUT:
+                    if param_type == ParamType.INPUT:
                         self.errors.append(SemanticError(
-                            f"Parameter '{proc_symbol.param_names[i]}' marked with 'I' cannot receive "
-                            f"argument '{arg_name}' which is marked with 'O'",
+                            f"Parameter '{arg_name}' marked with 'O' cannot be passed to parameter "
+                            f"'{proc_symbol.param_names[i]}' marked with 'I'",
                             self.current_line
                         ))
+                    # OUTPUT propagation: if OUTPUT parameter is unassigned, it must be passed to OUTPUT position
+                    # (since it's uninitialized, it can only be an OUT variable)
+                    if not arg_symbol.output_assigned:  # OUTPUT parameter is unassigned
+                        if param_type != ParamType.OUTPUT:
+                            self.errors.append(SemanticError(
+                                f"Parameter '{arg_name}' marked with 'O' (unassigned) must be passed to parameter "
+                                f"'{proc_symbol.param_names[i]}' also marked with 'O', but it is not marked with 'O'",
+                                self.current_line
+                            ))
                 
                 # Check parameter passing rules (type compatibility, scope, etc.)
                 try:
@@ -344,12 +371,16 @@ class SemanticAnalyzer(ASTVisitor):
     
     def visit_read(self, cmd: ReadCommand):
         """Visit ReadCommand - validate READ statement"""
+        # Extract line number from node
+        self.current_line = cmd.line
         if isinstance(cmd.identifier, Identifier):
             # Variable read
             try:
                 self.symbol_table.check_variable_usage(
                     cmd.identifier.name, is_read=False, is_write=True, line=self.current_line
                 )
+                # Mark OUTPUT parameter as assigned
+                self.symbol_table.mark_output_assigned(cmd.identifier.name, self.current_line)
             except SymbolTableError as e:
                 self.errors.append(SemanticError(e.message, e.line))
         elif isinstance(cmd.identifier, Access):
@@ -372,6 +403,8 @@ class SemanticAnalyzer(ASTVisitor):
                     self.symbol_table.check_variable_usage(
                         cmd.identifier.name, is_read=False, is_write=True, line=self.current_line
                     )
+                    # Mark OUTPUT parameter as assigned (for arrays)
+                    self.symbol_table.mark_output_assigned(cmd.identifier.name, self.current_line)
                 except SymbolTableError as e:
                     self.errors.append(SemanticError(e.message, e.line))
             except SymbolTableError as e:
@@ -383,6 +416,8 @@ class SemanticAnalyzer(ASTVisitor):
     
     def visit_write(self, cmd: WriteCommand):
         """Visit WriteCommand - validate WRITE statement"""
+        # Extract line number from node
+        self.current_line = cmd.line
         # Validate value
         self.visit_value(cmd.value)
     

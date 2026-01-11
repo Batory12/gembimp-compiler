@@ -76,6 +76,7 @@ class Statement(ASTNode):
 class AssignCommand(Statement):
     identifier: Union[Identifier, 'Access']
     expression: Expression
+    line: Optional[int] = None
     
     def accept(self, visitor):
         return visitor.visit_assign(self)
@@ -86,6 +87,7 @@ class IfCommand(Statement):
     condition: Condition
     then_commands: List['Command']
     else_commands: Optional[List['Command']] = None
+    line: Optional[int] = None
     
     def accept(self, visitor):
         return visitor.visit_if(self)
@@ -95,6 +97,7 @@ class IfCommand(Statement):
 class WhileCommand(Statement):
     condition: Condition
     commands: List['Command']
+    line: Optional[int] = None
     
     def accept(self, visitor):
         return visitor.visit_while(self)
@@ -104,6 +107,7 @@ class WhileCommand(Statement):
 class RepeatCommand(Statement):
     commands: List['Command']
     condition: Condition
+    line: Optional[int] = None
     
     def accept(self, visitor):
         return visitor.visit_repeat(self)
@@ -116,6 +120,7 @@ class ForCommand(Statement):
     to_val: Value
     commands: List['Command']
     downto: bool = False
+    line: Optional[int] = None
     
     def accept(self, visitor):
         return visitor.visit_for(self)
@@ -125,6 +130,7 @@ class ForCommand(Statement):
 class ProcCallCommand(Statement):
     name: str
     args: List[str]
+    line: Optional[int] = None
     
     def accept(self, visitor):
         return visitor.visit_proc_call(self)
@@ -133,6 +139,7 @@ class ProcCallCommand(Statement):
 @dataclass
 class ReadCommand(Statement):
     identifier: Union[Identifier, 'Access']
+    line: Optional[int] = None
     
     def accept(self, visitor):
         return visitor.visit_read(self)
@@ -141,6 +148,7 @@ class ReadCommand(Statement):
 @dataclass
 class WriteCommand(Statement):
     value: Value
+    line: Optional[int] = None
     
     def accept(self, visitor):
         return visitor.visit_write(self)
@@ -154,6 +162,7 @@ Command = Union[AssignCommand, IfCommand, WhileCommand, RepeatCommand, ForComman
 class Declaration(ASTNode):
     name: str
     array_range: Optional[tuple] = None  # (start, end) tuple or None
+    line: Optional[int] = None
     
     def accept(self, visitor):
         return visitor.visit_declaration(self)
@@ -164,6 +173,7 @@ class Declaration(ASTNode):
 class ArgDecl(ASTNode):
     arg_type: Optional[str]  # type is 'T', 'I', 'O', or None (empty)
     name: str
+    line: Optional[int] = None
     
     def accept(self, visitor):
         return visitor.visit_arg_decl(self)
@@ -173,6 +183,7 @@ class ArgDecl(ASTNode):
 class ProcHead(ASTNode):
     name: str
     args: List[ArgDecl]
+    line: Optional[int] = None
     
     def accept(self, visitor):
         return visitor.visit_proc_head(self)
