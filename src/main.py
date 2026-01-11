@@ -1,5 +1,5 @@
-from lexer import CompilerLexer
-from parser import Parser
+from lexer import CompilerLexer, LexicalError
+from parser import CompilerParser
 from ast_nodes import display_ast
 import sys
 
@@ -14,18 +14,16 @@ def main():
         text = sys.stdin.read()
     
     lexer = CompilerLexer()
-    parser = Parser()
+    parser = CompilerParser()
     
     try:
         ast = parser.parse(lexer.tokenize(text))
         print(display_ast(ast))
-    except SyntaxError as e:
-        print(f"Syntax Error: {e}", file=sys.stderr)
+    except LexicalError as e:
+        print(f"Lexical Error: {e.message}", file=sys.stderr)
         sys.exit(1)
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
+    except SyntaxError as e:
+        print(f"Syntax Error: {e.message}", file=sys.stderr)
         sys.exit(1)
 
 

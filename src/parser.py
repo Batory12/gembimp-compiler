@@ -1,4 +1,4 @@
-from sly import Parser as SlyParser
+from sly import Parser
 from lexer import CompilerLexer
 from ast_nodes import (
     Program, Procedure, Main, Declaration, ArgDecl, ProcHead,
@@ -8,14 +8,10 @@ from ast_nodes import (
 )
 
 
-class Parser(SlyParser):
+class CompilerParser(Parser):
     tokens = CompilerLexer.tokens
     start = 'program_all'
-    
-    def __init__(self, lexer=None):
-        # sly.Parser doesn't need lexer in constructor, but we keep it for compatibility
-        self.lexer = lexer
-        super().__init__()
+    debugfile = 'parser.out'
     
     def error(self, token):
         if token:
