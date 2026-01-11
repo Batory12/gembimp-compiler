@@ -20,10 +20,10 @@ def main():
         ast = parser.parse(lexer.tokenize(text))
         print(display_ast(ast))
     except LexicalError as e:
-        print(f"Lexical Error: {e.message}", file=sys.stderr)
+        print(f"Lexical Error: {e}", file=sys.stderr)
         sys.exit(1)
     except SyntaxError as e:
-        print(f"Syntax Error: {e.message}", file=sys.stderr)
+        print(f"Syntax Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 

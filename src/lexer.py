@@ -8,13 +8,13 @@ class LexicalError(Exception):
 
 class CompilerLexer(Lexer):
     tokens = {
-        PROGRAM, PROCEDURE, IS, IN, END, IF, THEN, ELSE, ENDIF,
-        WHILE, DO, ENDWHILE, REPEAT, UNTIL, FOR, FROM, TO, DOWNTO, ENDFOR,
-        READ, WRITE,
-        ASSIGN, EQ, NE, GT, LT, GE, LE,
-        PLUS, MINUS, MUL, DIV, MOD,
-        SEMICOLON, COMMA, LPAREN, RPAREN, LBRACKET, RBRACKET, COLON,
-        PIDENTIFIER, NUM, TYPE_I, TYPE_O, TYPE_T
+        'PROGRAM', 'PROCEDURE', 'IS', 'IN', 'END', 'IF', 'THEN', 'ELSE', 'ENDIF',
+        'WHILE', 'DO', 'ENDWHILE', 'REPEAT', 'UNTIL', 'FOR', 'FROM', 'TO', 'DOWNTO', 'ENDFOR',
+        'READ', 'WRITE',
+        'ASSIGN', 'EQ', 'NE', 'GT', 'LT', 'GE', 'LE',
+        'PLUS', 'MINUS', 'MUL', 'DIV', 'MOD',
+        'SEMICOLON', 'COMMA', 'LPAREN', 'RPAREN', 'LBRACKET', 'RBRACKET', 'COLON',
+        'PIDENTIFIER', 'NUM', 'TYPE_I', 'TYPE_O', 'TYPE_T'
     }
     
     ignore = ' \t'
