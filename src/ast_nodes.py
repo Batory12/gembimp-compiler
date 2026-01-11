@@ -7,24 +7,36 @@ class ASTNode(ABC):
     pass
 
 
-# Value nodes
-@dataclass
-class Value(ASTNode):
-    value: Union[int, 'Identifier']
-
-
 @dataclass
 class Identifier(ASTNode):
     name: str
-    index: Optional[Union[str, int]] = None  # None for simple variable, str/int for array access
+
+
+@dataclass
+class Access(ASTNode):
+    """Array access: array_name[index]"""
+    name: str
+    index: 'Value'  # The index expression (can be a variable, number, or expression)
 
 
 # Expression nodes
-@dataclass
 class Expression(ASTNode):
-    operator: Optional[str]  # None for single value, '+', '-', '*', '/', '%' for operations
-    left: Value
-    right: Optional[Value] = None
+    """Abstract base class for expressions"""
+    pass
+
+
+@dataclass
+class Value(Expression):
+    """Expression representing a single value (number, identifier, or array access)"""
+    value: Union[int, Identifier, Access]
+
+
+@dataclass
+class BinaryExpression(Expression):
+    """Expression representing a binary operation"""
+    operator: str  # '+', '-', '*', '/', '%'
+    left: Expression
+    right: Expression
 
 
 # Condition nodes
@@ -35,34 +47,40 @@ class Condition(ASTNode):
     right: Value
 
 
-# Command nodes
+# Statement nodes
+class Statement(ASTNode):
+    """Abstract base class for statements"""
+    pass
+
+
+# Command/Statement nodes
 @dataclass
-class AssignCommand(ASTNode):
-    identifier: Identifier
+class AssignCommand(Statement):
+    identifier: Union[Identifier, 'Access']
     expression: Expression
 
 
 @dataclass
-class IfCommand(ASTNode):
+class IfCommand(Statement):
     condition: Condition
     then_commands: List['Command']
     else_commands: Optional[List['Command']] = None
 
 
 @dataclass
-class WhileCommand(ASTNode):
+class WhileCommand(Statement):
     condition: Condition
     commands: List['Command']
 
 
 @dataclass
-class RepeatCommand(ASTNode):
+class RepeatCommand(Statement):
     commands: List['Command']
     condition: Condition
 
 
 @dataclass
-class ForCommand(ASTNode):
+class ForCommand(Statement):
     var: str
     from_val: Value
     to_val: Value
@@ -71,18 +89,18 @@ class ForCommand(ASTNode):
 
 
 @dataclass
-class ProcCallCommand(ASTNode):
+class ProcCallCommand(Statement):
     name: str
     args: List[str]
 
 
 @dataclass
-class ReadCommand(ASTNode):
-    identifier: Identifier
+class ReadCommand(Statement):
+    identifier: Union[Identifier, 'Access']
 
 
 @dataclass
-class WriteCommand(ASTNode):
+class WriteCommand(Statement):
     value: Value
 
 
@@ -219,9 +237,7 @@ def display_ast(node: ASTNode, indent: int = 0) -> str:
     elif isinstance(node, Condition):
         return f"{node.left} {node.operator} {node.right}"
     
-    elif isinstance(node, Expression):
-        if node.operator is None:
-            return display_ast(node.left, 0)
+    elif isinstance(node, BinaryExpression):
         return f"({display_ast(node.left, 0)} {node.operator} {display_ast(node.right, 0)})"
     
     elif isinstance(node, Value):
@@ -230,9 +246,10 @@ def display_ast(node: ASTNode, indent: int = 0) -> str:
         return display_ast(node.value, 0)
     
     elif isinstance(node, Identifier):
-        if node.index is None:
-            return node.name
-        return f"{node.name}[{node.index}]"
+        return node.name
+    
+    elif isinstance(node, Access):
+        return f"{node.name}[{display_ast(node.index, 0)}]"
     
     else:
         return f"{indent_str}{type(node).__name__}"

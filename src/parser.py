@@ -4,7 +4,7 @@ from ast_nodes import (
     Program, Procedure, Main, Declaration, ArgDecl, ProcHead,
     AssignCommand, IfCommand, WhileCommand, RepeatCommand, ForCommand,
     ProcCallCommand, ReadCommand, WriteCommand,
-    Condition, Expression, Value, Identifier
+    Condition, Expression, BinaryExpression, Value, Identifier, Access
 )
 
 
@@ -154,27 +154,27 @@ class CompilerParser(Parser):
     
     @_('value PLUS value')
     def expression(self, p):
-        return Expression('+', p.value0, p.value1)
+        return BinaryExpression('+', p.value0, p.value1)
     
     @_('value MINUS value')
     def expression(self, p):
-        return Expression('-', p.value0, p.value1)
+        return BinaryExpression('-', p.value0, p.value1)
     
     @_('value MUL value')
     def expression(self, p):
-        return Expression('*', p.value0, p.value1)
+        return BinaryExpression('*', p.value0, p.value1)
     
     @_('value DIV value')
     def expression(self, p):
-        return Expression('/', p.value0, p.value1)
+        return BinaryExpression('/', p.value0, p.value1)
     
     @_('value MOD value')
     def expression(self, p):
-        return Expression('%', p.value0, p.value1)
+        return BinaryExpression('%', p.value0, p.value1)
     
     @_('value')
     def expression(self, p):
-        return Expression(None, p.value, None)
+        return p.value
     
     @_('value EQ value')
     def condition(self, p):
@@ -214,8 +214,8 @@ class CompilerParser(Parser):
     
     @_('PIDENTIFIER LBRACKET PIDENTIFIER RBRACKET')
     def identifier(self, p):
-        return Identifier(p.PIDENTIFIER0, p.PIDENTIFIER1)
+        return Access(p.PIDENTIFIER0, Value(Identifier(p.PIDENTIFIER1)))
     
     @_('PIDENTIFIER LBRACKET NUM RBRACKET')
     def identifier(self, p):
-        return Identifier(p.PIDENTIFIER, int(p.NUM))
+        return Access(p.PIDENTIFIER, Value(int(p.NUM)))

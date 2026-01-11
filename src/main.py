@@ -1,16 +1,20 @@
 from lexer import CompilerLexer, LexicalError
 from parser import CompilerParser
 from ast_nodes import display_ast
+from tac import TACGenerator, display_tac
 import sys
+import os
 
 
 def main():
     if len(sys.argv) > 1:
         # Read from file
-        with open(sys.argv[1], 'r') as f:
+        input_file = sys.argv[1]
+        with open(input_file, 'r') as f:
             text = f.read()
     else:
         # Read from stdin
+        input_file = None
         text = sys.stdin.read()
     
     lexer = CompilerLexer()
@@ -18,7 +22,28 @@ def main():
     
     try:
         ast = parser.parse(lexer.tokenize(text))
-        print(display_ast(ast))
+        
+        # Generate TAC
+        tac_gen = TACGenerator()
+        tac_instructions = tac_gen.generate(ast)
+        
+        # Determine output file names for debugging
+        if input_file:
+            base_name = os.path.splitext(os.path.basename(input_file))[0]
+            ast_file = f"{base_name}.ast"
+            tac_file = f"{base_name}.tac"
+        else:
+            ast_file = "output.ast"
+            tac_file = "output.tac"
+        
+        # Dump AST to file
+        with open(ast_file, 'w') as f:
+            f.write(display_ast(ast))
+        
+        # Dump TAC to file
+        with open(tac_file, 'w') as f:
+            f.write(display_tac(tac_instructions))
+        
     except LexicalError as e:
         print(f"Lexical Error: {e}", file=sys.stderr)
         sys.exit(1)
