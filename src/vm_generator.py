@@ -437,12 +437,12 @@ class VMGenerator:
         self.emit(VMInstruction(VMInstructionType.RST, res))
 
         # Loop: while b - mask > 0
-        begin_mask_loop = self.make_label(f"_begin_mask_loop")
+        begin_mask_loop = self.make_label(f"_begin_mul_mask_loop")
         self.emit_label(begin_mask_loop)
         self.gen_reg_copy(b, acc)
         self.emit(VMInstruction(VMInstructionType.SUB, mask))
         self.emit(VMInstruction(VMInstructionType.JZERO, 0))
-        end_mask_loop = self.make_label(f"_end_mask_loop")
+        end_mask_loop = self.make_label(f"_end_mul_mask_loop")
         self.add_jump_patch(end_mask_loop)
 
         # mask <<= 1
@@ -456,11 +456,11 @@ class VMGenerator:
         self.add_jump_patch(begin_mask_loop)
         self.emit_label(end_mask_loop)
         # while i > 0
-        begin_loop = self.make_label(f"_begin_loop")
+        begin_loop = self.make_label(f"_begin_mul_main_loop")
         self.emit_label(begin_loop)
         self.gen_reg_copy(i, acc)
         self.emit(VMInstruction(VMInstructionType.JZERO, 0))
-        end_loop = self.make_label(f"_end_loop")
+        end_loop = self.make_label(f"_end_mul_main_loop")
         self.add_jump_patch(end_loop)
 
         # res <<= 1
@@ -471,7 +471,7 @@ class VMGenerator:
         self.emit(VMInstruction(VMInstructionType.INC, acc))
         self.emit(VMInstruction(VMInstructionType.SUB, mask))
         self.emit(VMInstruction(VMInstructionType.JZERO, 0))
-        end_if = self.make_label(f"_end_if")
+        end_if = self.make_label(f"_end_mul_if")
         self.add_jump_patch(end_if)
 
         # res += a
@@ -554,7 +554,7 @@ class VMGenerator:
         # if b == 0 return 0, 0
         self.emit(VMInstruction(VMInstructionType.SWP, b))
         self.emit(VMInstruction(VMInstructionType.JZERO, 0))
-        end_loop = self.make_label(f"_end_loop")
+        end_loop = self.make_label(f"_end_div_main_loop")
         self.add_jump_patch(end_loop)
         self.emit(VMInstruction(VMInstructionType.SWP, b))
         
@@ -574,12 +574,12 @@ class VMGenerator:
         
 
         # Loop: while a - mask > 0
-        begin_mask_loop = self.make_label(f"_begin_mask_loop")
+        begin_mask_loop = self.make_label(f"_begin_div_mask_loop")
         self.emit_label(begin_mask_loop)
         self.gen_reg_copy(a, acc)
         self.emit(VMInstruction(VMInstructionType.SUB, mask))
         self.emit(VMInstruction(VMInstructionType.JZERO, 0))
-        end_mask_loop = self.make_label(f"_end_mask_loop")
+        end_mask_loop = self.make_label(f"_end_div_mask_loop")
         self.add_jump_patch(end_mask_loop)
 
         # mask <<= 1
@@ -594,7 +594,7 @@ class VMGenerator:
         self.emit_label(end_mask_loop)
         
         # while i > 0:
-        begin_loop = self.make_label(f"_begin_loop")
+        begin_loop = self.make_label(f"_begin_div_main_loop")
         self.emit_label(begin_loop)
         self.gen_reg_copy(i, acc)
         self.emit(VMInstruction(VMInstructionType.JZERO, 0))
@@ -609,7 +609,7 @@ class VMGenerator:
         self.emit(VMInstruction(VMInstructionType.INC, acc))
         self.emit(VMInstruction(VMInstructionType.SUB, mask))
         self.emit(VMInstruction(VMInstructionType.JZERO, 0))
-        end_if1 = self.make_label(f"_end_if1")
+        end_if1 = self.make_label(f"_end_div_if1")
         self.add_jump_patch(end_if1)
         # r += 1
         self.emit(VMInstruction(VMInstructionType.INC, r))
@@ -624,7 +624,7 @@ class VMGenerator:
         self.emit(VMInstruction(VMInstructionType.INC, acc))
         self.emit(VMInstruction(VMInstructionType.SUB, b))
         self.emit(VMInstruction(VMInstructionType.JZERO, 0))
-        end_if2 = self.make_label(f"_end_if2")
+        end_if2 = self.make_label(f"_end_div_if2")
         self.add_jump_patch(end_if2)
         # q += 1
         self.emit(VMInstruction(VMInstructionType.INC, q))
