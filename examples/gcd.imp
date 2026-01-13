@@ -4,7 +4,7 @@ IN
 x := a ;
 y := b ;
 WHILE y > 0 DO
-IF x > = y THEN
+IF x >= y THEN
 x := x - y ;
 ELSE
 x := x + y ;

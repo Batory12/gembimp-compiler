@@ -94,8 +94,14 @@ class VMGenerator:
         self.label_counter = 0
         self.halt_inserted = False
         
+        
     def get_memory_location(self, var_name: str) -> int:
-        """Get memory location for a variable, allocating if needed."""
+        """Get memory location for a variable, allocating if needed.
+        
+        Handles qualified names (scope.varname) for shadowing support.
+        Parameter names (procname@param0) should already be resolved to argument names in TAC.
+        """
+        # Regular variable - qualified names are already unique
         if var_name not in self.variable_map:
             self.variable_map[var_name] = self.next_memory
             self.next_memory += 1
@@ -269,8 +275,11 @@ class VMGenerator:
             self.generate_conditional_jump(left, op, right, label)
             
         elif instr.op == TACOp.CALL:
-            proc_label = f'proc_{instr.arg1}'
+            proc_name = str(instr.arg1)
+            proc_label = f'proc_{proc_name}'
+            
             # CALL j means: ra <- k + 1, k <- j
+            # Parameter mapping is handled in TAC generation
             self.emit(VMInstruction(VMInstructionType.CALL, 0, proc_label))  # Placeholder, will patch
             self.add_jump_patch(proc_label)
             
@@ -292,7 +301,7 @@ class VMGenerator:
             
         elif instr.op == TACOp.PARAM:
             # PARAM arg1 - parameter passing
-            # Parameters are passed via variables, so no code needed here
+            # Parameters are handled in TAC generation, no VM code needed here
             pass
             
         else:

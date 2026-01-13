@@ -5,7 +5,7 @@ Uses dataclass and enum approach for type safety and consistency with AST nodes.
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 from visitor import ASTVisitor
 from ast_nodes import (
     Program, Procedure, Main, Declaration,
@@ -13,6 +13,7 @@ from ast_nodes import (
     ProcCallCommand, ReadCommand, WriteCommand,
     Condition, Expression, BinaryExpression, Value, Identifier, Access
 )
+from symbol_table import SymbolTable, Symbol, SymbolType
 
 
 class TACOp(Enum):
@@ -108,11 +109,15 @@ def display_tac(instructions: List[TACInstruction]) -> str:
 class TACGenerator(ASTVisitor):
     """Visitor that generates three-address code from AST."""
     
-    def __init__(self):
+    def __init__(self, symbol_table: Optional[SymbolTable] = None):
         super().__init__()
         self.instructions: List[TACInstruction] = []
         self.temp_counter = 0
         self.label_counter = 0
+        self.symbol_table = symbol_table
+        self.current_procedure: Optional[str] = None  # Track current procedure scope
+        # Store procedure AST nodes for inlining
+        self.procedure_nodes: Dict[str, 'Procedure'] = {}  # Maps proc_name -> Procedure AST node
     
     def new_temp(self) -> str:
         """Create a new temporary variable name"""
@@ -125,6 +130,53 @@ class TACGenerator(ASTVisitor):
         label = f"L{self.label_counter}"
         self.label_counter += 1
         return label
+    
+    def get_qualified_name(self, var_name: str) -> str:
+        """Get qualified variable name based on current scope to handle shadowing.
+        
+        Returns:
+            Qualified name in format: 'main.varname' or 'procname.varname'
+        """
+        if not self.symbol_table:
+            # No symbol table, use name as-is (backward compatibility)
+            return var_name
+        
+        # Look up the symbol to determine its scope
+        symbol = self.symbol_table.lookup(var_name)
+        if symbol is None:
+            # Symbol not found, use name as-is (shouldn't happen after semantic analysis)
+            return var_name
+        
+        # Check if it's a FOR iterator (most local scope)
+        if symbol.is_for_iterator():
+            # FOR iterators are in the current procedure scope (or main if no procedure)
+            if self.current_procedure:
+                return f"{self.current_procedure}.{var_name}"
+            else:
+                return f"main.{var_name}"
+        
+        # Check if it's in current procedure scope (parameters or locals)
+        if self.current_procedure:
+            proc_symbols = self.symbol_table.procedure_symbols.get(self.current_procedure, {})
+            if var_name in proc_symbols:
+                symbol = proc_symbols[var_name]
+                # If it's a parameter, it should have been substituted during inlining
+                # If we still see it, use the argument name from param_mapping
+                if symbol.is_parameter():
+                    # This should only happen if param_mapping is set (during inlining)
+                    if hasattr(self, 'param_mapping') and var_name in self.param_mapping:
+                        return self.param_mapping[var_name]
+                    # Fallback: shouldn't happen if inlining works correctly
+                    return f"{self.current_procedure}.{var_name}"
+                # Local variable (not a parameter)
+                return f"{self.current_procedure}.{var_name}"
+        
+        # Check if it's a main program variable
+        if var_name in self.symbol_table.global_symbols:
+            return f"main.{var_name}"
+        
+        # Fallback: use name as-is
+        return var_name
     
     def emit(self, op: TACOp, result: Optional[str] = None, 
              arg1: Optional[Union[str, int]] = None,
@@ -142,23 +194,39 @@ class TACGenerator(ASTVisitor):
         return self.instructions
     
     def visit_program(self, node: Program):
-        """Visit Program node - generate main first, then procedures"""
-        # Generate TAC for main program first
-        self.visit_main(node.main)
-        # Then generate procedures
+        """Visit Program node - generate main first, procedures are inlined at call sites"""
+        # Store procedure nodes for inlining at call sites
         for proc in node.procedures:
-            self.visit_procedure(proc)
+            self.procedure_nodes[proc.head.name] = proc
+        
+        # Generate TAC for main program first
+        # Procedures will be inlined at their call sites
+        self.visit_main(node.main)
     
     def visit_main(self, node: Main):
         """Visit Main node - declarations don't generate code"""
+        # Set global scope (don't call enter_global_scope as it may reset state)
+        if self.symbol_table:
+            self.symbol_table.current_procedure = None
+            self.symbol_table.scope_level = 0
+        self.current_procedure = None
+        
         # Declarations don't generate code, they're just metadata
         for cmd in node.commands:
             cmd.accept(self)
     
     def visit_procedure(self, node: Procedure):
         """Visit Procedure node"""
+        # Set procedure scope (don't call enter_procedure_scope as procedure already exists)
+        proc_name = node.head.name
+        if self.symbol_table:
+            # Just set current_procedure for lookup, don't try to create new scope
+            self.symbol_table.current_procedure = proc_name
+            self.symbol_table.scope_level = 1
+        self.current_procedure = proc_name
+        
         # Procedure label
-        proc_label = f"proc_{node.head.name}"
+        proc_label = f"proc_{proc_name}"
         self.emit(TACOp.LABEL, label=proc_label)
         
         # Generate procedure body
@@ -167,6 +235,12 @@ class TACGenerator(ASTVisitor):
         
         # Return statement
         self.emit(TACOp.RET)
+        
+        # Exit procedure scope
+        if self.symbol_table:
+            self.symbol_table.current_procedure = None
+            self.symbol_table.scope_level = 0
+        self.current_procedure = None
     
     def visit_command(self, cmd):
         """Dispatch to specific command visitor"""
@@ -179,12 +253,14 @@ class TACGenerator(ASTVisitor):
         
         # Assign to target
         if isinstance(cmd.identifier, Identifier):
-            # Simple variable assignment
-            self.emit(TACOp.ASSIGN, result=cmd.identifier.name, arg1=expr_temp)
+            # Simple variable assignment - use qualified name
+            qualified_name = self.get_qualified_name(cmd.identifier.name)
+            self.emit(TACOp.ASSIGN, result=qualified_name, arg1=expr_temp)
         elif isinstance(cmd.identifier, Access):
-            # Array assignment
+            # Array assignment - use qualified name
+            qualified_name = self.get_qualified_name(cmd.identifier.name)
             index_temp = self.visit_value(cmd.identifier.index)
-            self.emit(TACOp.STORE_ARRAY, arg1=cmd.identifier.name, arg2=index_temp, result=expr_temp)
+            self.emit(TACOp.STORE_ARRAY, arg1=qualified_name, arg2=index_temp, result=expr_temp)
         else:
             raise ValueError(f"Unsupported identifier type: {type(cmd.identifier)}")
     
@@ -260,6 +336,23 @@ class TACGenerator(ASTVisitor):
     
     def visit_for(self, cmd: ForCommand):
         """Visit ForCommand - generate TAC for FOR loop"""
+        # Enter FOR scope - add iterator to symbol table's for_iterators stack
+        if self.symbol_table:
+            # Check if iterator already exists in current scope
+            existing = self.symbol_table.lookup(cmd.var)
+            if existing and existing.is_for_iterator():
+                # Already in scope (nested FOR with same iterator), don't add again
+                pass
+            else:
+                # Create and add iterator symbol
+                iterator = Symbol(
+                    name=cmd.var,
+                    symbol_type=SymbolType.FOR_ITERATOR,
+                    scope_level=self.symbol_table.scope_level,
+                    declared_at_line=None
+                )
+                self.symbol_table.for_iterators.append(iterator)
+        
         loop_label = self.new_label()
         end_label = self.new_label()
         
@@ -267,8 +360,9 @@ class TACGenerator(ASTVisitor):
         from_temp = self.visit_value(cmd.from_val)
         to_temp = self.visit_value(cmd.to_val)
         
-        # Initialize loop variable
-        self.emit(TACOp.ASSIGN, result=cmd.var, arg1=from_temp)
+        # Initialize loop variable - use qualified name
+        qualified_var = self.get_qualified_name(cmd.var)
+        self.emit(TACOp.ASSIGN, result=qualified_var, arg1=from_temp)
         
         # Loop start - check condition first
         self.emit(TACOp.LABEL, label=loop_label)
@@ -277,13 +371,13 @@ class TACGenerator(ASTVisitor):
         if cmd.downto:
             # FOR ... DOWNTO: exit if var < to_val
             cmp_temp = self.new_temp()
-            self.emit(TACOp.SUB, result=cmp_temp, arg1=cmd.var, arg2=to_temp)
+            self.emit(TACOp.SUB, result=cmp_temp, arg1=qualified_var, arg2=to_temp)
             # If var - to_val < 0 (i.e., var < to_val), exit
             self.emit(TACOp.IF, arg1=cmp_temp, arg2='<', result=0, label=end_label)
         else:
             # FOR ... TO: exit if var > to_val
             cmp_temp = self.new_temp()
-            self.emit(TACOp.SUB, result=cmp_temp, arg1=cmd.var, arg2=to_temp)
+            self.emit(TACOp.SUB, result=cmp_temp, arg1=qualified_var, arg2=to_temp)
             # If var - to_val > 0 (i.e., var > to_val), exit
             self.emit(TACOp.IF, arg1=cmp_temp, arg2='>', result=0, label=end_label)
         
@@ -294,35 +388,103 @@ class TACGenerator(ASTVisitor):
         # Increment/decrement loop variable
         if cmd.downto:
             dec_temp = self.new_temp()
-            self.emit(TACOp.SUB, result=dec_temp, arg1=cmd.var, arg2=1)
-            self.emit(TACOp.ASSIGN, result=cmd.var, arg1=dec_temp)
+            self.emit(TACOp.SUB, result=dec_temp, arg1=qualified_var, arg2=1)
+            self.emit(TACOp.ASSIGN, result=qualified_var, arg1=dec_temp)
         else:
             inc_temp = self.new_temp()
-            self.emit(TACOp.ADD, result=inc_temp, arg1=cmd.var, arg2=1)
-            self.emit(TACOp.ASSIGN, result=cmd.var, arg1=inc_temp)
+            self.emit(TACOp.ADD, result=inc_temp, arg1=qualified_var, arg2=1)
+            self.emit(TACOp.ASSIGN, result=qualified_var, arg1=inc_temp)
         
         # Jump back to condition check
         self.emit(TACOp.GOTO, label=loop_label)
         
         # End label
         self.emit(TACOp.LABEL, label=end_label)
+        
+        # Exit FOR scope - remove iterator from stack
+        if self.symbol_table and self.symbol_table.for_iterators:
+            # Only pop if we added one (check if last iterator matches)
+            if self.symbol_table.for_iterators and self.symbol_table.for_iterators[-1].name == cmd.var:
+                self.symbol_table.for_iterators.pop()
     
     def visit_proc_call(self, cmd: ProcCallCommand):
-        """Visit ProcCallCommand - generate TAC for procedure call"""
-        # Push parameters (for now, just call - parameter passing may need more work)
-        for arg in cmd.args:
-            self.emit(TACOp.PARAM, arg1=arg)
+        """Visit ProcCallCommand - inline procedure body with parameter substitution"""
+        proc_name = cmd.name
         
-        # Call procedure
-        self.emit(TACOp.CALL, arg1=cmd.name)
+        # Get procedure node for inlining
+        if proc_name not in self.procedure_nodes:
+            # Procedure not found, fallback to call
+            for arg in cmd.args:
+                qualified_arg = self.get_qualified_name(arg)
+                self.emit(TACOp.PARAM, arg1=qualified_arg)
+            self.emit(TACOp.CALL, arg1=proc_name)
+            return
+        
+        proc_node = self.procedure_nodes[proc_name]
+        
+        # Get procedure symbol to find parameter names
+        if not self.symbol_table:
+            # No symbol table, fallback
+            for arg in cmd.args:
+                qualified_arg = self.get_qualified_name(arg)
+                self.emit(TACOp.PARAM, arg1=qualified_arg)
+            self.emit(TACOp.CALL, arg1=proc_name)
+            return
+        
+        proc_symbol = self.symbol_table.lookup(proc_name)
+        if not proc_symbol or not proc_symbol.is_procedure():
+            # Procedure not found, fallback
+            for arg in cmd.args:
+                qualified_arg = self.get_qualified_name(arg)
+                self.emit(TACOp.PARAM, arg1=qualified_arg)
+            self.emit(TACOp.CALL, arg1=proc_name)
+            return
+        
+        # Get parameter names and argument qualified names
+        param_names = proc_symbol.param_names or []
+        arg_qualified_names = []
+        for arg in cmd.args:
+            qualified_arg = self.get_qualified_name(arg)
+            arg_qualified_names.append(qualified_arg)
+        
+        # Create parameter mapping: param_name -> argument_qualified_name (pass-by-reference)
+        old_mapping = getattr(self, 'param_mapping', {})
+        self.param_mapping = {}
+        for i, param_name in enumerate(param_names):
+            if i < len(arg_qualified_names):
+                # Map parameter name to argument's qualified name
+                self.param_mapping[param_name] = arg_qualified_names[i]
+        
+        # Save current procedure and scope
+        old_procedure = self.current_procedure
+        old_scope_level = self.symbol_table.scope_level if self.symbol_table else None
+        
+        # Set procedure scope for inlining
+        if self.symbol_table:
+            self.symbol_table.current_procedure = proc_name
+            self.symbol_table.scope_level = 1
+        self.current_procedure = proc_name
+        
+        # Inline procedure body (parameters will be substituted via param_mapping)
+        for proc_cmd in proc_node.commands:
+            proc_cmd.accept(self)
+        
+        # Restore scope
+        if self.symbol_table:
+            self.symbol_table.current_procedure = old_procedure
+            self.symbol_table.scope_level = old_scope_level if old_scope_level is not None else 0
+        self.current_procedure = old_procedure
+        self.param_mapping = old_mapping
     
     def visit_read(self, cmd: ReadCommand):
         """Visit ReadCommand - generate TAC for READ statement"""
         if isinstance(cmd.identifier, Identifier):
-            self.emit(TACOp.READ, arg1=cmd.identifier.name)
+            qualified_name = self.get_qualified_name(cmd.identifier.name)
+            self.emit(TACOp.READ, arg1=qualified_name)
         elif isinstance(cmd.identifier, Access):
+            qualified_name = self.get_qualified_name(cmd.identifier.name)
             index_temp = self.visit_value(cmd.identifier.index)
-            self.emit(TACOp.READ_ARRAY, arg1=cmd.identifier.name, arg2=index_temp)
+            self.emit(TACOp.READ_ARRAY, arg1=qualified_name, arg2=index_temp)
         else:
             raise ValueError(f"Unsupported identifier type: {type(cmd.identifier)}")
     
@@ -370,14 +532,15 @@ class TACGenerator(ASTVisitor):
             raise ValueError(f"Unsupported value type: {type(value.value)}")
     
     def visit_identifier(self, node: Identifier) -> str:
-        """Visit Identifier - return variable name"""
-        return node.name
+        """Visit Identifier - return qualified variable name"""
+        return self.get_qualified_name(node.name)
     
     def visit_access(self, node: Access) -> str:
         """Visit Access - generate TAC for array access"""
+        qualified_name = self.get_qualified_name(node.name)
         index_temp = self.visit_value(node.index)
         result_temp = self.new_temp()
-        self.emit(TACOp.LOAD_ARRAY, arg1=node.name, arg2=index_temp, result=result_temp)
+        self.emit(TACOp.LOAD_ARRAY, arg1=qualified_name, arg2=index_temp, result=result_temp)
         return result_temp
     
     def generate_condition_jump(self, condition: Condition, true_label: str, false_label: str):

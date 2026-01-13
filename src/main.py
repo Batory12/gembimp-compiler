@@ -31,8 +31,8 @@ def main():
                 print(error, file=sys.stderr)
             sys.exit(1)
         
-        # Generate TAC
-        tac_gen = TACGenerator()
+        # Generate TAC - pass symbol table for scope-aware code generation
+        tac_gen = TACGenerator(symbol_table=analyzer.symbol_table)
         tac_instructions = tac_gen.generate(ast)
         
         # Generate VM code
