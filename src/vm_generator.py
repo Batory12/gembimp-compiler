@@ -92,6 +92,7 @@ class VMGenerator:
         self.instruction_count = 0
 
         self.label_counter = 0
+        self.halt_inserted = False
         
     def get_memory_location(self, var_name: str) -> int:
         """Get memory location for a variable, allocating if needed."""
@@ -182,7 +183,16 @@ class VMGenerator:
                 # Record label at current instruction count (comments don't count as instructions)
                 if self.label_map.get(instr.label) is not None:
                     raise ValueError(f"Label {instr.label} already defined")
-                self.label_map[instr.label] = self.instruction_count
+                if self.is_procedure_label(instr.label):
+                    # if this is a first procedure encountered, program ends here
+                    if not self.halt_inserted:
+                        self.emit(VMInstruction(VMInstructionType.HALT))
+                        self.halt_inserted = True
+                    self.label_map[instr.label] = self.instruction_count
+                    # we store return address in Register.H
+                    self.emit(VMInstruction(VMInstructionType.SWP, Register.H, instr.label))
+                else:
+                    self.label_map[instr.label] = self.instruction_count
             else:
                 self.generate_instruction(instr)
         
@@ -193,10 +203,9 @@ class VMGenerator:
                 raise ValueError(f"Label {label_name} not found")
             self.instructions[instr_addr].arg = self.label_map[label_name]
         
-        # Add HALT at the end if not present
-        if not self.instructions or self.instructions[-1].instruction != VMInstructionType.HALT:
+        if not self.halt_inserted:
             self.emit(VMInstruction(VMInstructionType.HALT))
-        
+            self.halt_inserted = True
         return '\n'.join(str(inst) for inst in self.instructions)
     
     def generate_instruction(self, instr: TACInstruction):
@@ -260,16 +269,15 @@ class VMGenerator:
             self.generate_conditional_jump(left, op, right, label)
             
         elif instr.op == TACOp.CALL:
-            # CALL procedure_name
             proc_label = f'proc_{instr.arg1}'
             # CALL j means: ra <- k + 1, k <- j
-            self.emit(VMInstruction(VMInstructionType.CALL, 0))  # Placeholder, will patch
-            # Record instruction address
+            self.emit(VMInstruction(VMInstructionType.CALL, 0, proc_label))  # Placeholder, will patch
             self.add_jump_patch(proc_label)
             
         elif instr.op == TACOp.RET:
             # RET (return from procedure)
-            # RTRN means: k <- ra
+            # get return address from Register.H and return
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.H))
             self.emit(VMInstruction(VMInstructionType.RTRN))
             
         elif instr.op == TACOp.LOAD_ARRAY:
@@ -289,7 +297,9 @@ class VMGenerator:
             
         else:
             raise ValueError(f"Unsupported TAC operation: {instr.op}")
-    
+    def is_procedure_label(self, label: str) -> bool:
+        """Check if a label is a procedure label."""
+        return label.startswith('proc_')
     def generate_conditional_jump(self, left: Union[str, int], op: str, right: Union[str, int], target_label: str):
         """Generate code for conditional jump: if (left op right) goto target_label."""
         if op == '<':
@@ -392,6 +402,12 @@ class VMGenerator:
             self.instructions[-1].comment = ""
         self.instructions[-1].comment += f" Jump: {label}"
 
+    def add_call_patch(self, label: str):
+        """Add a call patch to the call_patches list for last instruction"""
+        self.call_patches.append((self.instruction_count - 1, label))
+        if not self.instructions[-1].comment:
+            self.instructions[-1].comment = ""
+        self.instructions[-1].comment += f" Call: {label}"
 
     def generate_multiplication(self, arg1: Union[str, int], arg2: Union[str, int], result: str):
         """Generate code for multiplication: result = arg1 * arg2.
