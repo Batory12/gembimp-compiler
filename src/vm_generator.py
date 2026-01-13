@@ -229,11 +229,11 @@ class VMGenerator:
             
         elif instr.op == TACOp.DIV:
             # result = arg1 / arg2 (integer division)
-            self.generate_division(instr.arg1, instr.arg2, instr.result)
+            self.generate_divmod(instr.arg1, instr.arg2, q_result=instr.result, r_result=None)
             
         elif instr.op == TACOp.MOD:
             # result = arg1 % arg2
-            self.generate_modulus(instr.arg1, instr.arg2, instr.result)
+            self.generate_divmod(instr.arg1, instr.arg2, q_result=None, r_result=instr.result)
             
         elif instr.op == TACOp.READ:
             # READ arg1 (variable name)
@@ -503,97 +503,148 @@ class VMGenerator:
 
 
         
-    def generate_division(self, arg1: Union[str, int], arg2: Union[str, int], result: str):
-        """Generate code for division: result = arg1 / arg2 (integer division)."""
-        # Algorithm: result = 0; remainder = arg1; while remainder >= arg2: remainder -= arg2; result++
-        remainder = f'_div_rem_{self.instruction_count}'
-        temp2 = f'_div_t2_{self.instruction_count}'
+    def generate_divmod(self, arg1: Union[str, int], arg2: Union[str, int], q_result: Optional[str] = None, r_result: Optional[str] = None):
+        """Generate code for div-mod algorithm. Logarithmitic division. Follows alogrithm:
+        def divmod_vm(a, b):
+        ```python
+            mask = 1
+            i = 1
+            q, r = 0, 0
+            
+            if b == 0:
+                return 0, 0
+            while a - mask > 0:
+                mask <<= 1
+                i += 1
+            
+            while i > 0:
+                r <<= 1
+                q <<= 1
+                if a - mask >= 0:
+                    r += 1
+                    a -= mask
+                
+                if r >= b:
+                    q += 1
+                    r -= b
+                
+                mask >>= 1
+                i -= 1
+            
+            return q, r
+        ```
+
+        """
+
         
-        self.load_to_ra(arg1)
-        self.store_from_ra(remainder)
-        self.load_to_ra(arg2)
-        self.store_from_ra(temp2)
+        acc = Register.A
+        # q, r = 0, 0
+        q = Register.F
+        self.emit(VMInstruction(VMInstructionType.RST, q))
+        r = Register.G
+        self.emit(VMInstruction(VMInstructionType.RST, r))
+
+        b = Register.E
+        self.gen_load_to_register(arg2, b)
         
-        # Initialize result to 0
-        self.emit(VMInstruction(VMInstructionType.RST, Register.A))
-        self.store_from_ra(result)
+        # if b == 0 return 0, 0
+        self.emit(VMInstruction(VMInstructionType.SWP, b))
+        self.emit(VMInstruction(VMInstructionType.JZERO, 0))
+        end_loop = self.make_label(f"_end_loop")
+        self.add_jump_patch(end_loop)
+        self.emit(VMInstruction(VMInstructionType.SWP, b))
         
-        # Loop: while remainder >= temp2
-        loop_start_addr = self.instruction_count
-        loop_label = f'_div_loop_{self.instruction_count}'
-        self.label_map[loop_label] = loop_start_addr
+        a = Register.D
+        self.gen_load_to_register(arg1, a)
+        # mask = 1
+        mask = Register.B
+        self.emit(VMInstruction(VMInstructionType.RST, mask, f"begin division of {arg1} by {arg2}"))
+        self.emit(VMInstruction(VMInstructionType.INC, mask))
         
-        # Check if remainder < temp2, exit if so
-        # Compute temp2 - remainder, if > 0 then exit
-        self.load_to_ra(temp2)
-        self.load_to_rb(remainder)
-        self.emit(VMInstruction(VMInstructionType.SUB, Register.B))  # ra = temp2 - remainder
-        end_label = f'_div_end_{self.instruction_count}'
+        # i = 1
+        i = Register.C
+        self.emit(VMInstruction(VMInstructionType.RST, i))
+        self.emit(VMInstruction(VMInstructionType.INC, i))
         
-        # Emit JPOS with placeholder - we'll patch it after generating loop body
-        self.emit(VMInstruction(VMInstructionType.JPOS, 0))  # Placeholder address
-        self.jump_patches.append((self.instruction_count - 1, end_label))
         
-        # Subtract temp2 from remainder
-        self.load_to_ra(remainder)
-        self.load_to_rb(temp2)
-        self.emit(VMInstruction(VMInstructionType.SUB, Register.B))  # ra = remainder - temp2
-        self.store_from_ra(remainder)
         
-        # Increment result
-        self.load_to_ra(result)
-        self.emit(VMInstruction(VMInstructionType.INC, Register.A))
-        self.store_from_ra(result)
-        
-        # Jump back to loop
+
+        # Loop: while a - mask > 0
+        begin_mask_loop = self.make_label(f"_begin_mask_loop")
+        self.emit_label(begin_mask_loop)
+        self.gen_reg_copy(a, acc)
+        self.emit(VMInstruction(VMInstructionType.SUB, mask))
+        self.emit(VMInstruction(VMInstructionType.JZERO, 0))
+        end_mask_loop = self.make_label(f"_end_mask_loop")
+        self.add_jump_patch(end_mask_loop)
+
+        # mask <<= 1
+        self.emit(VMInstruction(VMInstructionType.SHL, mask))
+
+        # i++
+        self.emit(VMInstruction(VMInstructionType.INC, i))
+
+        # end while
         self.emit(VMInstruction(VMInstructionType.JUMP, 0))
-        self.jump_patches.append((self.instruction_count - 1, loop_label))
+        self.add_jump_patch(begin_mask_loop)
+        self.emit_label(end_mask_loop)
         
-        # End label
-        self.label_map[end_label] = self.instruction_count
-    
-    def generate_modulus(self, arg1: Union[str, int], arg2: Union[str, int], result: str):
-        """Generate code for modulus: result = arg1 % arg2."""
-        # Algorithm: same as division, but result is the remainder
-        remainder = f'_mod_rem_{self.instruction_count}'
-        temp2 = f'_mod_t2_{self.instruction_count}'
-        
-        self.load_to_ra(arg1)
-        self.store_from_ra(remainder)
-        self.load_to_ra(arg2)
-        self.store_from_ra(temp2)
-        
-        # Loop: while remainder >= temp2
-        loop_start_addr = self.instruction_count
-        loop_label = f'_mod_loop_{self.instruction_count}'
-        self.label_map[loop_label] = loop_start_addr
-        
-        # Check if remainder < temp2, exit if so
-        self.load_to_ra(temp2)
-        self.load_to_rb(remainder)
-        self.emit(VMInstruction(VMInstructionType.SUB, Register.B))  # ra = temp2 - remainder
-        end_label = f'_mod_end_{self.instruction_count}'
-        
-        # Emit JPOS with placeholder - we'll patch it after generating loop body
-        self.emit(VMInstruction(VMInstructionType.JPOS, 0))  # Placeholder address
-        self.jump_patches.append((self.instruction_count - 1, end_label))
-        
-        # Subtract temp2 from remainder
-        self.load_to_ra(remainder)
-        self.load_to_rb(temp2)
-        self.emit(VMInstruction(VMInstructionType.SUB, Register.B))  # ra = remainder - temp2
-        self.store_from_ra(remainder)
-        
-        # Jump back to loop
+        # while i > 0:
+        begin_loop = self.make_label(f"_begin_loop")
+        self.emit_label(begin_loop)
+        self.gen_reg_copy(i, acc)
+        self.emit(VMInstruction(VMInstructionType.JZERO, 0))
+        self.add_jump_patch(end_loop)
+
+        # r <<= 1
+        self.emit(VMInstruction(VMInstructionType.SHL, r))
+        # q <<= 1
+        self.emit(VMInstruction(VMInstructionType.SHL, q))
+        # if a - mask >= 0:
+        self.gen_reg_copy(a, acc)
+        self.emit(VMInstruction(VMInstructionType.INC, acc))
+        self.emit(VMInstruction(VMInstructionType.SUB, mask))
+        self.emit(VMInstruction(VMInstructionType.JZERO, 0))
+        end_if1 = self.make_label(f"_end_if1")
+        self.add_jump_patch(end_if1)
+        # r += 1
+        self.emit(VMInstruction(VMInstructionType.INC, r))
+        # a -= mask
+        self.emit(VMInstruction(VMInstructionType.SWP, a))
+        self.emit(VMInstruction(VMInstructionType.SUB, mask))
+        self.emit(VMInstruction(VMInstructionType.SWP, a))
+        # end if 
+        self.emit_label(end_if1)
+        # if r >= b:
+        self.gen_reg_copy(r, acc)
+        self.emit(VMInstruction(VMInstructionType.INC, acc))
+        self.emit(VMInstruction(VMInstructionType.SUB, b))
+        self.emit(VMInstruction(VMInstructionType.JZERO, 0))
+        end_if2 = self.make_label(f"_end_if2")
+        self.add_jump_patch(end_if2)
+        # q += 1
+        self.emit(VMInstruction(VMInstructionType.INC, q))
+        # r -= b
+        self.emit(VMInstruction(VMInstructionType.SWP, r))
+        self.emit(VMInstruction(VMInstructionType.SUB, b))
+        self.emit(VMInstruction(VMInstructionType.SWP, r))
+        # end if
+        self.emit_label(end_if2)
+        # mask >>= 1
+        self.emit(VMInstruction(VMInstructionType.SHR, mask))
+        # i -= 1
+        self.emit(VMInstruction(VMInstructionType.DEC, i))
+        # end while
         self.emit(VMInstruction(VMInstructionType.JUMP, 0))
-        self.jump_patches.append((self.instruction_count - 1, loop_label))
-        
-        # End label
-        self.label_map[end_label] = self.instruction_count
-        
-        # End: remainder is the result
-        self.load_to_ra(remainder)
-        self.store_from_ra(result)
+        self.add_jump_patch(begin_loop)
+        self.emit_label(end_loop)
+        # end while
+        if q_result is not None:
+            self.emit(VMInstruction(VMInstructionType.SWP, q))
+            self.emit(VMInstruction(VMInstructionType.STORE, self.get_memory_location(q_result)))
+        if r_result is not None:
+            self.emit(VMInstruction(VMInstructionType.SWP, r))
+            self.emit(VMInstruction(VMInstructionType.STORE, self.get_memory_location(r_result)))
     
     def generate_array_load(self, array_name: str, index: Union[str, int], result: str):
         """Generate code for array load: result = array_name[index]."""
