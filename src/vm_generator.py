@@ -83,6 +83,9 @@ class VMGenerator:
         self.variable_map: Dict[str, int] = {}
         self.next_memory = 0
         
+        # Array metadata: array_name -> (base_address, size, start_index)
+        self.array_info: Dict[str, tuple[int, int, int]] = {}
+        
         # Label to instruction number mapping (filled in first pass)
         self.label_map: Dict[str, int] = {}
         # Generated VM instructions
@@ -181,6 +184,7 @@ class VMGenerator:
         self.instruction_count = 0
         self.variable_map = {}
         self.next_memory = 0
+        self.array_info = {}
         self.label_map = {}
         self.jump_patches = []  # List of (instruction_index, label_name) tuples
         
@@ -298,11 +302,43 @@ class VMGenerator:
             # STORE_ARRAY array_name[index] -> value
             # Use RSTORE for indirect memory access
             self.generate_array_store(instr.arg1, instr.arg2, instr.result)
+        
+        elif instr.op == TACOp.READ_ARRAY:
+            # READ_ARRAY array_name[index] - read value into array element
+            # Equivalent to: READ; STORE_ARRAY
+            self.emit(VMInstruction(VMInstructionType.READ))
+            # Save read value temporarily in Register.D (SWP d: a <-> d, so now d has value, a has old d)
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.D))
+            # Compute address in rc (will use rb if index is variable, or compute directly if constant)
+            if not self.is_constant(instr.arg2):
+                # Load index into rb only if it's a variable
+                self.load_to_rb(instr.arg2)
+            # Compute address in rc
+            self.compute_array_address(instr.arg1, instr.arg2)
+            # Restore read value from Register.D to ra (SWP d: a <-> d, so now a has value, d has old a)
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.D))
+            # Store: prc <- ra
+            self.emit(VMInstruction(VMInstructionType.RSTORE, Register.C))
             
         elif instr.op == TACOp.PARAM:
             # PARAM arg1 - parameter passing
             # Parameters are handled in TAC generation, no VM code needed here
             pass
+        
+        elif instr.op == TACOp.ALLOC:
+            # ALLOC array_name size start_index
+            # Allocate memory for array and store metadata
+            array_name = instr.result  # Array name
+            size = instr.arg1  # Array size
+            start_index = instr.arg2  # Start index
+            
+            # Allocate memory: base address is next_memory, reserve 'size' cells
+            base_address = self.next_memory
+            self.array_info[array_name] = (base_address, size, start_index)
+            self.next_memory += size
+            
+            # Note: No VM instructions are generated for ALLOC itself,
+            # as it's just metadata for the code generator to use
             
         else:
             raise ValueError(f"Unsupported TAC operation: {instr.op}")
@@ -674,65 +710,115 @@ class VMGenerator:
             self.emit(VMInstruction(VMInstructionType.SWP, r))
             self.emit(VMInstruction(VMInstructionType.STORE, self.get_memory_location(r_result), r_result))
     
+    def compute_array_address(self, array_name: str, index: Union[str, int]):
+        """Compute array element address and put it in Register.C.
+        
+        Uses array metadata from ALLOC instruction:
+        address = base_address + (index - start_index)
+        
+        Assumes index is loaded into rb before calling (if variable).
+        After calling, address is in Register.C.
+        
+        Optimizes for constant indices by computing offset at compile time when possible.
+        """
+        if array_name not in self.array_info:
+            raise ValueError(f"Array '{array_name}' not allocated. ALLOC instruction missing.")
+        
+        base_address, size, start_index = self.array_info[array_name]
+        
+        # Optimize: if index is constant, compute offset at compile time
+        if self.is_constant(index):
+            index_val = self.get_constant_value(index)
+            offset = index_val - start_index
+            # Load base_address + offset directly into rc
+            final_address = base_address + offset
+            for inst in self.build_constant(Register.A, final_address):
+                self.emit(inst)
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # address -> rc
+            return
+        
+        # Index is a variable (already loaded into rb by caller)
+        # Load base address into rc (build_constant uses ra, so we'll move it after)
+        for inst in self.build_constant(Register.A, base_address):
+            self.emit(inst)
+        self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # base_address -> rc
+        
+        # Compute offset: index - start_index
+        if start_index == 0:
+            # offset = index (already in rb, no adjustment needed)
+            # Compute address: rc = rc + rb (base + offset)
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # rc -> ra
+            self.emit(VMInstruction(VMInstructionType.ADD, Register.B))  # ra = rc + rb
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # ra -> rc
+        else:
+            # offset = index - start_index
+            # Current state: rb has index, rc has base_address
+            # Build start_index in Register.E (build_constant uses ra, move to re after)
+            for inst in self.build_constant(Register.A, start_index):
+                self.emit(inst)
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.E))  # start_index -> re
+            
+            # Now: rb has index, re has start_index, rc has base_address
+            # Compute offset: offset = index - start_index
+            # Move index (rb) to ra
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.B))  # index -> ra, rb gets old ra (don't care)
+            # Move start_index (re) to rb
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.E))  # start_index -> rb, re gets old rb
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.A))  # index -> rb, start_index -> ra
+            # Now: rb has index, ra has start_index
+            # Swap to get: ra has index, rb has start_index
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.B))  # index -> ra, start_index -> rb
+            # Compute: ra = ra - rb = index - start_index
+            self.emit(VMInstruction(VMInstructionType.SUB, Register.B))  # ra = index - start_index (offset)
+            # Move offset (ra) to rb
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.B))  # offset -> rb
+            
+            # Now compute address: address = base_address + offset
+            # Current state: rb has offset, rc has base_address
+            # Move base (rc) to ra
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # base_address -> ra
+            # Compute: ra = ra + rb = base_address + offset
+            self.emit(VMInstruction(VMInstructionType.ADD, Register.B))  # ra = base_address + offset
+            # Move result (ra) to rc
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # address -> rc
+    
     def generate_array_load(self, array_name: str, index: Union[str, int], result: str):
         """Generate code for array load: result = array_name[index]."""
-        # Compute address: array_base + index
-        # Load index into rb, compute address in rc, use RLOAD
+        # Compute address in rc using array metadata
+        # For constant indices, this will compute the address directly
+        # For variable indices, we need to load the index into rb first
+        if not self.is_constant(index):
+            # Load index into rb only if it's a variable
+            self.load_to_rb(index)
         
-        # Get array base address (assume arrays start at a fixed offset)
-        # For simplicity, use variable_map to track array base addresses
-        array_base_key = f'{array_name}_base'
-        if array_base_key not in self.variable_map:
-            self.variable_map[array_base_key] = self.next_memory
-            self.next_memory += 10  # Reserve space for array
+        # Compute address in rc (will use rb if index is variable, or compute directly if constant)
+        self.compute_array_address(array_name, index)
         
-        array_base_addr = self.variable_map[array_base_key]
-        
-        # Load index into rb
-        self.load_to_rb(index)
-        
-        # Compute address: array_base_addr + index in rc
-        # First load base address into rc
-        for inst in self.build_constant(Register.C, array_base_addr):
-            self.emit(inst)
-        # Now add index: rc = rc + rb
-        self.emit(VMInstruction(VMInstructionType.SWP, Register.A))  # Save ra
-        self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # rc -> ra
-        self.emit(VMInstruction(VMInstructionType.ADD, Register.B))  # ra = rc + rb
-        self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # ra -> rc
-        self.emit(VMInstruction(VMInstructionType.SWP, Register.A))  # Restore ra
-        
-        # Now use RLOAD: ra <- prc
+        # Use RLOAD: ra <- prc
         self.emit(VMInstruction(VMInstructionType.RLOAD, Register.C))
         self.store_from_ra(result)
     
     def generate_array_store(self, array_name: str, index: Union[str, int], value: Union[str, int]):
         """Generate code for array store: array_name[index] = value."""
-        # Compute address: array_base + index
-        # Load value into ra, compute address in rc, use RSTORE
-        
-        # Get array base address
-        array_base_key = f'{array_name}_base'
-        if array_base_key not in self.variable_map:
-            self.variable_map[array_base_key] = self.next_memory
-            self.next_memory += 10  # Reserve space for array
-        
-        array_base_addr = self.variable_map[array_base_key]
-        
-        # Load index into rb
-        self.load_to_rb(index)
-        
-        # Compute address: array_base_addr + index in rc
-        for inst in self.build_constant(Register.C, array_base_addr):
-            self.emit(inst)
-        self.emit(VMInstruction(VMInstructionType.SWP, Register.A))  # Save ra
-        self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # rc -> ra
-        self.emit(VMInstruction(VMInstructionType.ADD, Register.B))  # ra = rc + rb
-        self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # ra -> rc
-        self.emit(VMInstruction(VMInstructionType.SWP, Register.A))  # Restore ra
-        
-        # Load value into ra
+        # Load value into ra first (we'll need to save it)
         self.load_to_ra(value)
+        # Save value to Register.D temporarily (SWP d: a <-> d, so now d has value, a has old d)
+        self.emit(VMInstruction(VMInstructionType.SWP, Register.D))
+        
+        # Compute address in rc using array metadata
+        # For constant indices, this will compute the address directly
+        # For variable indices, we need to load the index into rb first
+        if not self.is_constant(index):
+            # Load index into rb only if it's a variable
+            self.load_to_rb(index)
+        
+        # Compute address in rc (will use rb if index is variable, or compute directly if constant)
+        self.compute_array_address(array_name, index)
+        
+        # Restore value from Register.D to ra
+        # After compute_array_address: d has value, c has address, a has (some value from build_constant)
+        # SWP d: swaps a and d, so now a has value, d has old a
+        self.emit(VMInstruction(VMInstructionType.SWP, Register.D))
         
         # Use RSTORE: prc <- ra
         self.emit(VMInstruction(VMInstructionType.RSTORE, Register.C))

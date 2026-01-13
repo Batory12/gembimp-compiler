@@ -33,6 +33,7 @@ class TACOp(Enum):
     STORE = 'STORE'
     LOAD_ARRAY = 'LOAD_ARRAY'
     STORE_ARRAY = 'STORE_ARRAY'
+    ALLOC = 'ALLOC'  # Array allocation: ALLOC array_name size start_index
     
     # I/O operations
     READ = 'READ'
@@ -77,6 +78,8 @@ class TACInstruction:
             return f"{self.result} = {self.arg1} {self.op.value} {self.arg2}"
         elif self.op in [TACOp.LOAD, TACOp.STORE]:
             return f"{self.op.value} {self.arg1} -> {self.result}"
+        elif self.op == TACOp.ALLOC:
+            return f"{self.op.value} {self.result} size={self.arg1} start={self.arg2}"
         elif self.op in [TACOp.LOAD_ARRAY, TACOp.STORE_ARRAY, TACOp.READ_ARRAY]:
             if self.op == TACOp.READ_ARRAY:
                 return f"{self.op.value} {self.arg1}[{self.arg2}]"
@@ -204,14 +207,18 @@ class TACGenerator(ASTVisitor):
         self.visit_main(node.main)
     
     def visit_main(self, node: Main):
-        """Visit Main node - declarations don't generate code"""
+        """Visit Main node - process declarations first, then commands"""
         # Set global scope (don't call enter_global_scope as it may reset state)
         if self.symbol_table:
             self.symbol_table.current_procedure = None
             self.symbol_table.scope_level = 0
         self.current_procedure = None
         
-        # Declarations don't generate code, they're just metadata
+        # Process declarations first (generate ALLOC for arrays)
+        for decl in node.declarations:
+            self.visit_declaration(decl)
+        
+        # Then process commands
         for cmd in node.commands:
             cmd.accept(self)
     
@@ -228,6 +235,10 @@ class TACGenerator(ASTVisitor):
         # Procedure label
         proc_label = f"proc_{proc_name}"
         self.emit(TACOp.LABEL, label=proc_label)
+        
+        # Process declarations first (generate ALLOC for arrays)
+        for decl in node.declarations:
+            self.visit_declaration(decl)
         
         # Generate procedure body
         for cmd in node.commands:
@@ -542,6 +553,21 @@ class TACGenerator(ASTVisitor):
         result_temp = self.new_temp()
         self.emit(TACOp.LOAD_ARRAY, arg1=qualified_name, arg2=index_temp, result=result_temp)
         return result_temp
+    
+    def visit_declaration(self, node: Declaration):
+        """Visit Declaration - generate ALLOC instruction for arrays"""
+        if node.array_range is not None:
+            # Array declaration
+            start, end = node.array_range
+            size = end - start + 1  # Array size
+            
+            # Get qualified name for the array
+            qualified_name = self.get_qualified_name(node.name)
+            
+            # Emit ALLOC instruction: ALLOC array_name size start_index
+            # Format: result = array_name, arg1 = size, arg2 = start_index
+            self.emit(TACOp.ALLOC, result=qualified_name, arg1=size, arg2=start)
+        # Regular variables don't generate code - they're allocated on first use
     
     def generate_condition_jump(self, condition: Condition, true_label: str, false_label: str):
         """Generate TAC for condition check and jump
