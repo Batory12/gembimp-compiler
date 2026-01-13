@@ -145,10 +145,8 @@ class VMGenerator:
         """Load a value (variable or constant) into ra register."""
         if self.is_constant(source):
             const_val = self.get_constant_value(source)
-            # Build constant in rb, then swap to ra
-            for inst in self.build_constant(Register.B, const_val):
+            for inst in self.build_constant(Register.A, const_val):
                 self.emit(inst)
-            self.emit(VMInstruction(VMInstructionType.SWP, Register.B))  # Move from rb to ra
         else:
             # Variable - load from memory
             mem_loc = self.get_memory_location(source)
@@ -211,15 +209,15 @@ class VMGenerator:
             
         elif instr.op == TACOp.ADD:
             # result = arg1 + arg2
-            self.load_to_ra(instr.arg1)
             self.load_to_rb(instr.arg2)
+            self.load_to_ra(instr.arg1)
             self.emit(VMInstruction(VMInstructionType.ADD, 'b'))  # ra = ra + rb
             self.store_from_ra(instr.result)
             
         elif instr.op == TACOp.SUB:
             # result = arg1 - arg2
-            self.load_to_ra(instr.arg1)
             self.load_to_rb(instr.arg2)
+            self.load_to_ra(instr.arg1)
             self.emit(VMInstruction(VMInstructionType.SUB, 'b'))  # ra = max(ra - rb, 0)
             self.store_from_ra(instr.result)
             
@@ -250,7 +248,7 @@ class VMGenerator:
             label_name = instr.label or instr.arg1
             self.emit(VMInstruction(VMInstructionType.JUMP, 0))  # Placeholder, will patch
             # Record instruction address (instruction_count was incremented by emit)
-            self.jump_patches.append((self.instruction_count - 1, label_name))
+            self.add_jump_patch(label_name)
             
         elif instr.op == TACOp.IF:
             # IF arg1 op arg2 GOTO label
@@ -268,7 +266,7 @@ class VMGenerator:
             # CALL j means: ra <- k + 1, k <- j
             self.emit(VMInstruction(VMInstructionType.CALL, 0))  # Placeholder, will patch
             # Record instruction address
-            self.jump_patches.append((self.instruction_count - 1, proc_label))
+            self.add_jump_patch(proc_label)
             
         elif instr.op == TACOp.RET:
             # RET (return from procedure)
@@ -297,64 +295,70 @@ class VMGenerator:
         """Generate code for conditional jump: if (left op right) goto target_label."""
         if op == '<':
             # if left < right: compute (right - left) > 0
-            self.load_to_ra(right)
             self.load_to_rb(left)
+            self.load_to_ra(right)
             self.emit(VMInstruction(VMInstructionType.SUB, Register.B))  # ra = right - left
             self.emit(VMInstruction(VMInstructionType.JPOS, 0))  # Placeholder, will patch
-            self.jump_patches.append((self.instruction_count - 1, target_label))
+            self.add_jump_patch(target_label)
             
         elif op == '>':
             # if left > right: compute (left - right) > 0
-            self.load_to_ra(left)
             self.load_to_rb(right)
+            self.load_to_ra(left)
             self.emit(VMInstruction(VMInstructionType.SUB, Register.B))  # ra = left - right
             self.emit(VMInstruction(VMInstructionType.JPOS, 0))  # Placeholder, will patch
-            self.jump_patches.append((self.instruction_count - 1, target_label))
+            self.add_jump_patch(target_label)
             
         elif op == '=':
-            # if left == right: compute (left - right) == 0
-            self.load_to_ra(left)
+            # reverse of !=
+
+            neq = self.make_label("not_eq")
+            self.load_to_rb(left)
+            self.load_to_ra(right)
+            self.emit(VMInstruction(VMInstructionType.SUB, Register.B))  # ra = right - left
+            self.emit(VMInstruction(VMInstructionType.JPOS, 0))  # Placeholder, will patch
+            self.add_jump_patch(neq)
+
             self.load_to_rb(right)
+            self.load_to_ra(left)
             self.emit(VMInstruction(VMInstructionType.SUB, Register.B))  # ra = left - right
-            self.emit(VMInstruction(VMInstructionType.JZERO, 0))  # Placeholder, will patch
-            self.jump_patches.append((self.instruction_count - 1, target_label))
+            self.emit(VMInstruction(VMInstructionType.JPOS, 0))  # Placeholder, will patch
+            self.add_jump_patch(neq)
+            self.emit(VMInstruction(VMInstructionType.JUMP, 0))
+            self.add_jump_patch(target_label)
+            self.emit_label(neq)
             
         elif op == '<=':
-            # if left <= right: same as if not (left > right), or (right - left) >= 0
-            self.load_to_ra(right)
+            # if left <= right: (right - left) >= 0 -> (right - left + 1) > 0
             self.load_to_rb(left)
-            self.emit(VMInstruction(VMInstructionType.SUB, Register.B))  # ra = right - left
-            # Check if ra >= 0, i.e., ra > 0 OR ra == 0
-            self.emit(VMInstruction(VMInstructionType.JZERO, 0))  # if right == left
-            self.jump_patches.append((self.instruction_count - 1, target_label))
-            self.emit(VMInstruction(VMInstructionType.JPOS, 0))  # if right > left, so left <= right
-            self.jump_patches.append((self.instruction_count - 1, target_label))
+            self.load_to_ra(right)
+            self.emit(VMInstruction(VMInstructionType.INC, Register.A))
+            self.emit(VMInstruction(VMInstructionType.SUB, Register.B))  # ra = right + 1 - left
+            self.emit(VMInstruction(VMInstructionType.JPOS, 0))  # Placeholder, will patch
+            self.add_jump_patch(target_label)
             
         elif op == '>=':
-            # if left >= right: same as (left - right) >= 0
-            self.load_to_ra(left)
+             # if left >= right: compute (left - right + 1) > 0
             self.load_to_rb(right)
-            self.emit(VMInstruction(VMInstructionType.SUB, Register.B))  # ra = left - right
-            self.emit(VMInstruction(VMInstructionType.JZERO, 0))  # if left == right
-            self.jump_patches.append((self.instruction_count - 1, target_label))
-            self.emit(VMInstruction(VMInstructionType.JPOS, 0))  # if left > right
-            self.jump_patches.append((self.instruction_count - 1, target_label))
+            self.load_to_ra(left)
+            self.emit(VMInstruction(VMInstructionType.INC, Register.A))
+            self.emit(VMInstruction(VMInstructionType.SUB, Register.B))  # ra = left + 1- right
+            self.emit(VMInstruction(VMInstructionType.JPOS, 0))  # Placeholder, will patch
+            self.add_jump_patch(target_label)
             
         elif op == '!=':
-            # if left != right: same as not (left == right)
-            self.load_to_ra(left)
-            self.load_to_rb(right)
-            self.emit(VMInstruction(VMInstructionType.SUB, Register.B))  # ra = left - right
-            # If ra != 0, then left != right
-            # Check if ra > 0 (left > right)
-            self.emit(VMInstruction(VMInstructionType.JPOS, 0))
-            self.jump_patches.append((self.instruction_count - 1, target_label))
-            # Check if left < right by computing right - left
-            self.load_to_ra(right)
+            # check if left > right or right > left
             self.load_to_rb(left)
+            self.load_to_ra(right)
             self.emit(VMInstruction(VMInstructionType.SUB, Register.B))  # ra = right - left
-            self.emit(VMInstruction(VMInstructionType.JPOS, 0))  # if right > left, so left != right
-            self.jump_patches.append((self.instruction_count - 1, target_label))
+            self.emit(VMInstruction(VMInstructionType.JPOS, 0))  # Placeholder, will patch
+            self.add_jump_patch(target_label)
+
+            self.load_to_rb(right)
+            self.load_to_ra(left)
+            self.emit(VMInstruction(VMInstructionType.SUB, Register.B))  # ra = left - right
+            self.emit(VMInstruction(VMInstructionType.JPOS, 0))  # Placeholder, will patch
+            self.add_jump_patch(target_label)
             
         else:
             raise ValueError(f"Unsupported comparison operator: {op}")
