@@ -260,6 +260,7 @@ class TACGenerator(ASTVisitor):
     
     def visit_for(self, cmd: ForCommand):
         """Visit ForCommand - generate TAC for FOR loop"""
+        #TODO: !!!! DOESNT WORK WHEN DOWNTO 0, it loops forever (always i >= 0)
         loop_label = self.new_label()
         end_label = self.new_label()
         

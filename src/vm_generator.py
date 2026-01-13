@@ -7,6 +7,7 @@ from enum import Enum, StrEnum
 from typing import List, Dict, Optional, Union
 from tac import TACInstruction, TACOp
 from dataclasses import dataclass
+from symbol_table import SymbolTable
 
 
 class Register(Enum):
@@ -78,7 +79,7 @@ class VMInstruction:
 class VMGenerator:
     """Converts TAC instructions to VM assembly code."""
     
-    def __init__(self):
+    def __init__(self, symbol_table: Optional[SymbolTable] = None):
         # Variable/register to memory location mapping
         self.variable_map: Dict[str, int] = {}
         self.next_memory = 0
@@ -94,12 +95,51 @@ class VMGenerator:
         self.label_counter = 0
         self.halt_inserted = False
         
+        # Symbol table for array size information
+        self.symbol_table = symbol_table
+        
     def get_memory_location(self, var_name: str) -> int:
         """Get memory location for a variable, allocating if needed."""
         if var_name not in self.variable_map:
             self.variable_map[var_name] = self.next_memory
             self.next_memory += 1
         return self.variable_map[var_name]
+    
+    def get_array_info(self, array_name: str) -> tuple[int, int]:
+        """Get array information from the symbol table.
+        
+        Returns (start_index, size) where size = end - start + 1
+        If symbol table is not available or array not found, returns (0, 10).
+        """
+        if not self.symbol_table:
+            return (0, 10)  # Default fallback
+        
+        # Try to find array in global symbols
+        symbol = self.symbol_table.global_symbols.get(array_name)
+        if symbol and symbol.is_array():
+            if symbol.array_start is not None and symbol.array_end is not None:
+                size = symbol.array_end - symbol.array_start + 1
+                return (symbol.array_start, size)
+        
+        # Try to find in procedure symbols
+        for proc_symbols in self.symbol_table.procedure_symbols.values():
+            symbol = proc_symbols.get(array_name)
+            if symbol and symbol.is_array():
+                if symbol.array_start is not None and symbol.array_end is not None:
+                    size = symbol.array_end - symbol.array_start + 1
+                    return (symbol.array_start, size)
+        
+        # Array not found or no bounds info, return default
+        return (0, 10)
+    
+    def get_array_size(self, array_name: str) -> int:
+        """Get the size of an array from the symbol table.
+        
+        Returns the number of elements: end - start + 1
+        If symbol table is not available or array not found, returns default size of 10.
+        """
+        _, size = self.get_array_info(array_name)
+        return size
     
     def is_constant(self, value: Union[str, int]) -> bool:
         """Check if a value is a numeric constant."""
@@ -289,6 +329,25 @@ class VMGenerator:
             # STORE_ARRAY array_name[index] -> value
             # Use RSTORE for indirect memory access
             self.generate_array_store(instr.arg1, instr.arg2, instr.result)
+            
+        elif instr.op == TACOp.READ_ARRAY:
+            # READ_ARRAY array_name[index]
+            # Similar to STORE_ARRAY but reads from input
+            # First read into a temp, then store to array
+            temp_var = f"_read_temp_{self.instruction_count}"
+            # Allocate array space if needed (same as store)
+            array_base_key = f'{instr.arg1}_base'
+            if array_base_key not in self.variable_map:
+                array_size = self.get_array_size(instr.arg1)
+                self.variable_map[array_base_key] = self.next_memory
+                self.next_memory += array_size
+            # Read value
+            self.emit(VMInstruction(VMInstructionType.READ))
+            # Store to temp
+            temp_mem = self.get_memory_location(temp_var)
+            self.emit(VMInstruction(VMInstructionType.STORE, temp_mem))
+            # Now store to array using generate_array_store
+            self.generate_array_store(instr.arg1, instr.arg2, temp_var)
             
         elif instr.op == TACOp.PARAM:
             # PARAM arg1 - parameter passing
@@ -667,26 +726,40 @@ class VMGenerator:
     
     def generate_array_load(self, array_name: str, index: Union[str, int], result: str):
         """Generate code for array load: result = array_name[index]."""
-        # Compute address: array_base + index
+        # Compute address: array_base + (index - array_start)
         # Load index into rb, compute address in rc, use RLOAD
         
-        # Get array base address (assume arrays start at a fixed offset)
-        # For simplicity, use variable_map to track array base addresses
+        # Get array base address and allocate space based on actual array size
         array_base_key = f'{array_name}_base'
         if array_base_key not in self.variable_map:
+            array_size = self.get_array_size(array_name)
             self.variable_map[array_base_key] = self.next_memory
-            self.next_memory += 10  # Reserve space for array
+            self.next_memory += array_size  # Reserve space for array based on actual size
         
         array_base_addr = self.variable_map[array_base_key]
+        array_start, _ = self.get_array_info(array_name)
         
         # Load index into rb
         self.load_to_rb(index)
         
-        # Compute address: array_base_addr + index in rc
+        # Compute address: array_base_addr + (index - array_start) in rc
         # First load base address into rc
         for inst in self.build_constant(Register.C, array_base_addr):
             self.emit(inst)
-        # Now add index: rc = rc + rb
+        
+        # Subtract array_start from index: compute (index - array_start) in rb
+        if array_start != 0:
+            # Load array_start into ra
+            for inst in self.build_constant(Register.A, array_start):
+                self.emit(inst)
+            # Swap: ra = index, rb = array_start
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.B))
+            # SUB Register.B: ra = max{ra - rb, 0} = max{index - array_start, 0}
+            self.emit(VMInstruction(VMInstructionType.SUB, Register.B))
+            # Swap back: rb = max{index - array_start, 0}, ra = array_start
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.B))
+        
+        # Now add adjusted index to base: rc = rc + rb
         self.emit(VMInstruction(VMInstructionType.SWP, Register.A))  # Save ra
         self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # rc -> ra
         self.emit(VMInstruction(VMInstructionType.ADD, Register.B))  # ra = rc + rb
@@ -699,23 +772,40 @@ class VMGenerator:
     
     def generate_array_store(self, array_name: str, index: Union[str, int], value: Union[str, int]):
         """Generate code for array store: array_name[index] = value."""
-        # Compute address: array_base + index
+        # Compute address: array_base + (index - array_start)
         # Load value into ra, compute address in rc, use RSTORE
         
-        # Get array base address
+        # Get array base address and allocate space based on actual array size
         array_base_key = f'{array_name}_base'
         if array_base_key not in self.variable_map:
+            array_size = self.get_array_size(array_name)
             self.variable_map[array_base_key] = self.next_memory
-            self.next_memory += 10  # Reserve space for array
+            self.next_memory += array_size  # Reserve space for array based on actual size
         
         array_base_addr = self.variable_map[array_base_key]
+        array_start, _ = self.get_array_info(array_name)
         
         # Load index into rb
         self.load_to_rb(index)
         
-        # Compute address: array_base_addr + index in rc
+        # Compute address: array_base_addr + (index - array_start) in rc
+        # First load base address into rc
         for inst in self.build_constant(Register.C, array_base_addr):
             self.emit(inst)
+        
+        # Subtract array_start from index: compute (index - array_start) in rb
+        if array_start != 0:
+            # Load array_start into ra
+            for inst in self.build_constant(Register.A, array_start):
+                self.emit(inst)
+            # Swap: ra = index, rb = array_start
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.B))
+            # SUB Register.B: ra = max{ra - rb, 0} = max{index - array_start, 0}
+            self.emit(VMInstruction(VMInstructionType.SUB, Register.B))
+            # Swap back: rb = max{index - array_start, 0}, ra = array_start
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.B))
+        
+        # Now add adjusted index to base: rc = rc + rb
         self.emit(VMInstruction(VMInstructionType.SWP, Register.A))  # Save ra
         self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # rc -> ra
         self.emit(VMInstruction(VMInstructionType.ADD, Register.B))  # ra = rc + rb

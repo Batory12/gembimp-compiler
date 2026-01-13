@@ -35,8 +35,8 @@ def main():
         tac_gen = TACGenerator()
         tac_instructions = tac_gen.generate(ast)
         
-        # Generate VM code
-        vm_gen = VMGenerator()
+        # Generate VM code (pass symbol table for array size information)
+        vm_gen = VMGenerator(symbol_table=analyzer.symbol_table)
         vm_code = vm_gen.generate(tac_instructions)
         
         # Determine output file names for debugging
