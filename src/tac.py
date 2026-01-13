@@ -276,16 +276,10 @@ class TACGenerator(ASTVisitor):
         # Compare loop variable with to value and exit if condition fails
         if cmd.downto:
             # FOR ... DOWNTO: exit if var < to_val
-            cmp_temp = self.new_temp()
-            self.emit(TACOp.SUB, result=cmp_temp, arg1=cmd.var, arg2=to_temp)
-            # If var - to_val < 0 (i.e., var < to_val), exit
-            self.emit(TACOp.IF, arg1=cmp_temp, arg2='<', result=0, label=end_label)
+            self.emit(TACOp.IF, arg1=cmd.var, arg2='<', result=to_temp, label=end_label)
         else:
             # FOR ... TO: exit if var > to_val
-            cmp_temp = self.new_temp()
-            self.emit(TACOp.SUB, result=cmp_temp, arg1=cmd.var, arg2=to_temp)
-            # If var - to_val > 0 (i.e., var > to_val), exit
-            self.emit(TACOp.IF, arg1=cmp_temp, arg2='>', result=0, label=end_label)
+            self.emit(TACOp.IF, arg1=cmd.var, arg2='>', result=to_temp, label=end_label)
         
         # Loop body (reached only if condition passed)
         for body_cmd in cmd.commands:
@@ -293,13 +287,9 @@ class TACGenerator(ASTVisitor):
         
         # Increment/decrement loop variable
         if cmd.downto:
-            dec_temp = self.new_temp()
-            self.emit(TACOp.SUB, result=dec_temp, arg1=cmd.var, arg2=1)
-            self.emit(TACOp.ASSIGN, result=cmd.var, arg1=dec_temp)
+            self.emit(TACOp.SUB, result=cmd.var, arg1=cmd.var, arg2=1)
         else:
-            inc_temp = self.new_temp()
-            self.emit(TACOp.ADD, result=inc_temp, arg1=cmd.var, arg2=1)
-            self.emit(TACOp.ASSIGN, result=cmd.var, arg1=inc_temp)
+            self.emit(TACOp.ADD, result=cmd.var, arg1=cmd.var, arg2=1)
         
         # Jump back to condition check
         self.emit(TACOp.GOTO, label=loop_label)
