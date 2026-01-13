@@ -127,9 +127,8 @@ class VMGenerator:
         """Build a constant value in a register using INC, DEC, SHL, SHR.
         Returns list of instructions."""
         insts = []
-        
         # Reset register first
-        insts.append(VMInstruction(VMInstructionType.RST, reg))
+        insts.append(VMInstruction(VMInstructionType.RST, reg, f"Building {value}"))
         if value == 0:
             return insts
         
@@ -155,7 +154,7 @@ class VMGenerator:
     def store_from_ra(self, dest: str):
         """Store ra register to a variable."""
         mem_loc = self.get_memory_location(dest)
-        self.emit(VMInstruction(VMInstructionType.STORE, mem_loc))
+        self.emit(VMInstruction(VMInstructionType.STORE, mem_loc, dest))
     
     def load_to_rb(self, source: Union[str, int]):
         """Load a value into rb register."""
@@ -500,7 +499,7 @@ class VMGenerator:
 
         # Save result
         self.emit(VMInstruction(VMInstructionType.SWP, res))
-        self.emit(VMInstruction(VMInstructionType.STORE, self.get_memory_location(result)))
+        self.emit(VMInstruction(VMInstructionType.STORE, self.get_memory_location(result), result))
 
 
 
@@ -645,10 +644,10 @@ class VMGenerator:
         # end while
         if q_result is not None:
             self.emit(VMInstruction(VMInstructionType.SWP, q))
-            self.emit(VMInstruction(VMInstructionType.STORE, self.get_memory_location(q_result)))
+            self.emit(VMInstruction(VMInstructionType.STORE, self.get_memory_location(q_result), q_result))
         if r_result is not None:
             self.emit(VMInstruction(VMInstructionType.SWP, r))
-            self.emit(VMInstruction(VMInstructionType.STORE, self.get_memory_location(r_result)))
+            self.emit(VMInstruction(VMInstructionType.STORE, self.get_memory_location(r_result), r_result))
     
     def generate_array_load(self, array_name: str, index: Union[str, int], result: str):
         """Generate code for array load: result = array_name[index]."""
@@ -715,7 +714,8 @@ class VMGenerator:
     
     def gen_load_to_register(self, value: Union[str, int], register: Register):
         if self.is_constant(value):
-            self.build_constant(register, self.get_constant_value(value))
+            for inst in self.build_constant(register, self.get_constant_value(value)):
+                self.emit(inst)
         else:
             self.load_to_ra(value)
             self.emit(VMInstruction(VMInstructionType.SWP, register))
