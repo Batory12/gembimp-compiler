@@ -335,18 +335,12 @@ class VMGenerator:
             # Similar to STORE_ARRAY but reads from input
             # First read into a temp, then store to array
             temp_var = f"_read_temp_{self.instruction_count}"
-            # Allocate array space if needed (same as store)
-            array_base_key = f'{instr.arg1}_base'
-            if array_base_key not in self.variable_map:
-                array_size = self.get_array_size(instr.arg1)
-                self.variable_map[array_base_key] = self.next_memory
-                self.next_memory += array_size
             # Read value
             self.emit(VMInstruction(VMInstructionType.READ))
             # Store to temp
             temp_mem = self.get_memory_location(temp_var)
             self.emit(VMInstruction(VMInstructionType.STORE, temp_mem))
-            # Now store to array using generate_array_store
+            # Now store to array using generate_array_store (which handles allocation)
             self.generate_array_store(instr.arg1, instr.arg2, temp_var)
             
         elif instr.op == TACOp.PARAM:
@@ -726,40 +720,32 @@ class VMGenerator:
     
     def generate_array_load(self, array_name: str, index: Union[str, int], result: str):
         """Generate code for array load: result = array_name[index]."""
-        # Compute address: array_base + (index - array_start)
+        # Compute address: array_base + index (base already includes start offset)
         # Load index into rb, compute address in rc, use RLOAD
         
         # Get array base address and allocate space based on actual array size
         array_base_key = f'{array_name}_base'
         if array_base_key not in self.variable_map:
             array_size = self.get_array_size(array_name)
-            self.variable_map[array_base_key] = self.next_memory
+            array_start, _ = self.get_array_info(array_name)
+            # Ensure base address is non-negative: adjust next_memory if needed
+            if self.next_memory < array_start:
+                self.next_memory = array_start
+            # Base address already includes the start index offset
+            self.variable_map[array_base_key] = self.next_memory - array_start
             self.next_memory += array_size  # Reserve space for array based on actual size
         
         array_base_addr = self.variable_map[array_base_key]
-        array_start, _ = self.get_array_info(array_name)
         
         # Load index into rb
         self.load_to_rb(index)
         
-        # Compute address: array_base_addr + (index - array_start) in rc
+        # Compute address: array_base_addr + index in rc
         # First load base address into rc
         for inst in self.build_constant(Register.C, array_base_addr):
             self.emit(inst)
         
-        # Subtract array_start from index: compute (index - array_start) in rb
-        if array_start != 0:
-            # Load array_start into ra
-            for inst in self.build_constant(Register.A, array_start):
-                self.emit(inst)
-            # Swap: ra = index, rb = array_start
-            self.emit(VMInstruction(VMInstructionType.SWP, Register.B))
-            # SUB Register.B: ra = max{ra - rb, 0} = max{index - array_start, 0}
-            self.emit(VMInstruction(VMInstructionType.SUB, Register.B))
-            # Swap back: rb = max{index - array_start, 0}, ra = array_start
-            self.emit(VMInstruction(VMInstructionType.SWP, Register.B))
-        
-        # Now add adjusted index to base: rc = rc + rb
+        # Now add index to base: rc = rc + rb
         self.emit(VMInstruction(VMInstructionType.SWP, Register.A))  # Save ra
         self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # rc -> ra
         self.emit(VMInstruction(VMInstructionType.ADD, Register.B))  # ra = rc + rb
@@ -772,40 +758,32 @@ class VMGenerator:
     
     def generate_array_store(self, array_name: str, index: Union[str, int], value: Union[str, int]):
         """Generate code for array store: array_name[index] = value."""
-        # Compute address: array_base + (index - array_start)
+        # Compute address: array_base + index (base already includes start offset)
         # Load value into ra, compute address in rc, use RSTORE
         
         # Get array base address and allocate space based on actual array size
         array_base_key = f'{array_name}_base'
         if array_base_key not in self.variable_map:
             array_size = self.get_array_size(array_name)
-            self.variable_map[array_base_key] = self.next_memory
+            array_start, _ = self.get_array_info(array_name)
+            # Ensure base address is non-negative: adjust next_memory if needed
+            if self.next_memory < array_start:
+                self.next_memory = array_start
+            # Base address already includes the start index offset
+            self.variable_map[array_base_key] = self.next_memory - array_start
             self.next_memory += array_size  # Reserve space for array based on actual size
         
         array_base_addr = self.variable_map[array_base_key]
-        array_start, _ = self.get_array_info(array_name)
         
         # Load index into rb
         self.load_to_rb(index)
         
-        # Compute address: array_base_addr + (index - array_start) in rc
+        # Compute address: array_base_addr + index in rc
         # First load base address into rc
         for inst in self.build_constant(Register.C, array_base_addr):
             self.emit(inst)
         
-        # Subtract array_start from index: compute (index - array_start) in rb
-        if array_start != 0:
-            # Load array_start into ra
-            for inst in self.build_constant(Register.A, array_start):
-                self.emit(inst)
-            # Swap: ra = index, rb = array_start
-            self.emit(VMInstruction(VMInstructionType.SWP, Register.B))
-            # SUB Register.B: ra = max{ra - rb, 0} = max{index - array_start, 0}
-            self.emit(VMInstruction(VMInstructionType.SUB, Register.B))
-            # Swap back: rb = max{index - array_start, 0}, ra = array_start
-            self.emit(VMInstruction(VMInstructionType.SWP, Register.B))
-        
-        # Now add adjusted index to base: rc = rc + rb
+        # Now add index to base: rc = rc + rb
         self.emit(VMInstruction(VMInstructionType.SWP, Register.A))  # Save ra
         self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # rc -> ra
         self.emit(VMInstruction(VMInstructionType.ADD, Register.B))  # ra = rc + rb
