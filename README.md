@@ -1,2 +1,2 @@
 # gembimp-compiler
-A simple compiler for a simple imperative language
+A simple compiler (gembajler) for a simple imperative language

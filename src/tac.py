@@ -289,6 +289,7 @@ class TACGenerator(ASTVisitor):
         # Increment/decrement loop variable
         if cmd.downto:
             self.emit(TACOp.SUB, result=cmd.var, arg1=cmd.var, arg2=1)
+            self.emit(TACOp.IF, arg1=cmd.var, arg2='=', result=0, label=end_label)
         else:
             self.emit(TACOp.ADD, result=cmd.var, arg1=cmd.var, arg2=1)
         

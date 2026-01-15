@@ -7,17 +7,10 @@ from vm_generator import VMGenerator
 import sys
 import os
 
-
-def main():
-    if len(sys.argv) > 1:
-        # Read from file
-        input_file = sys.argv[1]
-        with open(input_file, 'r') as f:
-            text = f.read()
-    else:
-        # Read from stdin
-        input_file = None
-        text = sys.stdin.read()
+DEBUG = False
+def main(debug: bool, input_file: str, output_file: str):
+    with open(input_file, 'r') as f:
+        text = f.read()
     
     lexer = CompilerLexer()
     parser = CompilerParser()
@@ -38,28 +31,18 @@ def main():
         # Generate VM code (pass symbol table for array size information)
         vm_gen = VMGenerator(symbol_table=analyzer.symbol_table)
         vm_code = vm_gen.generate(tac_instructions)
+    
         
-        # Determine output file names for debugging
-        if input_file:
-            base_name = os.path.splitext(os.path.basename(input_file))[0]
-            ast_file = f"{base_name}.ast"
-            tac_file = f"{base_name}.tac"
-            vm_file = f"{base_name}.vm"
-        else:
-            ast_file = "output.ast"
-            tac_file = "output.tac"
-            vm_file = "output.vm"
-        
-        # Dump AST to file
-        with open(ast_file, 'w') as f:
-            f.write(display_ast(ast))
-        
-        # Dump TAC to file
-        with open(tac_file, 'w') as f:
-            f.write(display_tac(tac_instructions))
+        if debug:
+            with open("debug.ast", 'w') as f:
+                f.write(display_ast(ast))
+            
+            # Dump TAC to file
+            with open("debug.tac", 'w') as f:
+                f.write(display_tac(tac_instructions))
         
         # Dump VM code to file
-        with open(vm_file, 'w') as f:
+        with open(output_file, 'w') as f:
             f.write(vm_code)
         
     except LexicalError as e:
@@ -71,4 +54,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) != 3:
+        print("Usage: python main.py <input_file> <output_file>", file=sys.stderr)
+        sys.exit(1)
+    main(debug=DEBUG, input_file=sys.argv[1], output_file=sys.argv[2])
