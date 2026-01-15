@@ -13,6 +13,7 @@ from ast_nodes import (
     ProcCallCommand, ReadCommand, WriteCommand,
     Condition, Expression, BinaryExpression, Value, Identifier, Access
 )
+from symbol_table import SymbolTable
 
 
 class TACOp(Enum):
@@ -108,11 +109,13 @@ def display_tac(instructions: List[TACInstruction]) -> str:
 class TACGenerator(ASTVisitor):
     """Visitor that generates three-address code from AST."""
     
-    def __init__(self):
+    def __init__(self, symbol_table: Optional[SymbolTable] = None):
         super().__init__()
         self.instructions: List[TACInstruction] = []
         self.temp_counter = 0
         self.label_counter = 0
+        self.symbol_table = symbol_table
+        self.current_procedure: Optional[str] = None  # Track current procedure for variable qualification
     
     def new_temp(self) -> str:
         """Create a new temporary variable name"""
@@ -138,6 +141,7 @@ class TACGenerator(ASTVisitor):
         self.instructions = []
         self.temp_counter = 0
         self.label_counter = 0
+        self.current_procedure = None
         self.visit_program(ast)
         return self.instructions
     
@@ -157,6 +161,12 @@ class TACGenerator(ASTVisitor):
     
     def visit_procedure(self, node: Procedure):
         """Visit Procedure node"""
+        # Save previous procedure context
+        prev_procedure = self.current_procedure
+        
+        # Set current procedure context
+        self.current_procedure = node.head.name
+        
         # Procedure label
         proc_label = f"proc_{node.head.name}"
         self.emit(TACOp.LABEL, label=proc_label)
@@ -167,6 +177,9 @@ class TACGenerator(ASTVisitor):
         
         # Return statement
         self.emit(TACOp.RET)
+        
+        # Restore previous procedure context
+        self.current_procedure = prev_procedure
     
     def visit_command(self, cmd):
         """Dispatch to specific command visitor"""
@@ -179,12 +192,14 @@ class TACGenerator(ASTVisitor):
         
         # Assign to target
         if isinstance(cmd.identifier, Identifier):
-            # Simple variable assignment
-            self.emit(TACOp.ASSIGN, result=cmd.identifier.name, arg1=expr_temp)
+            # Simple variable assignment - qualify the variable name
+            qualified_name = self.qualify_variable_name(cmd.identifier.name)
+            self.emit(TACOp.ASSIGN, result=qualified_name, arg1=expr_temp)
         elif isinstance(cmd.identifier, Access):
-            # Array assignment
+            # Array assignment - qualify the array name
+            qualified_name = self.qualify_variable_name(cmd.identifier.name)
             index_temp = self.visit_value(cmd.identifier.index)
-            self.emit(TACOp.STORE_ARRAY, arg1=cmd.identifier.name, arg2=index_temp, result=expr_temp)
+            self.emit(TACOp.STORE_ARRAY, arg1=qualified_name, arg2=index_temp, result=expr_temp)
         else:
             raise ValueError(f"Unsupported identifier type: {type(cmd.identifier)}")
     
@@ -260,7 +275,6 @@ class TACGenerator(ASTVisitor):
     
     def visit_for(self, cmd: ForCommand):
         """Visit ForCommand - generate TAC for FOR loop"""
-        #TODO: !!!! DOESNT WORK WHEN DOWNTO 0, it loops forever (always i >= 0)
         loop_label = self.new_label()
         end_label = self.new_label()
         
@@ -268,8 +282,10 @@ class TACGenerator(ASTVisitor):
         from_temp = self.visit_value(cmd.from_val)
         to_temp = self.visit_value(cmd.to_val)
         
-        # Initialize loop variable
-        self.emit(TACOp.ASSIGN, result=cmd.var, arg1=from_temp)
+        # Qualify loop variable name (FOR iterators in procedures need to be qualified)
+        var_name = self.qualify_variable_name(cmd.var)
+        
+        self.emit(TACOp.ASSIGN, result=var_name, arg1=from_temp)
         
         # Loop start - check condition first
         self.emit(TACOp.LABEL, label=loop_label)
@@ -277,10 +293,10 @@ class TACGenerator(ASTVisitor):
         # Compare loop variable with to value and exit if condition fails
         if cmd.downto:
             # FOR ... DOWNTO: exit if var < to_val
-            self.emit(TACOp.IF, arg1=cmd.var, arg2='<', result=to_temp, label=end_label)
+            self.emit(TACOp.IF, arg1=var_name, arg2='<', result=to_temp, label=end_label)
         else:
             # FOR ... TO: exit if var > to_val
-            self.emit(TACOp.IF, arg1=cmd.var, arg2='>', result=to_temp, label=end_label)
+            self.emit(TACOp.IF, arg1=var_name, arg2='>', result=to_temp, label=end_label)
         
         # Loop body (reached only if condition passed)
         for body_cmd in cmd.commands:
@@ -288,10 +304,10 @@ class TACGenerator(ASTVisitor):
         
         # Increment/decrement loop variable
         if cmd.downto:
-            self.emit(TACOp.SUB, result=cmd.var, arg1=cmd.var, arg2=1)
-            self.emit(TACOp.IF, arg1=cmd.var, arg2='=', result=0, label=end_label)
+            self.emit(TACOp.SUB, result=var_name, arg1=var_name, arg2=1)
+            self.emit(TACOp.IF, arg1=var_name, arg2='=', result=0, label=end_label)
         else:
-            self.emit(TACOp.ADD, result=cmd.var, arg1=cmd.var, arg2=1)
+            self.emit(TACOp.ADD, result=var_name, arg1=var_name, arg2=1)
         
         # Jump back to condition check
         self.emit(TACOp.GOTO, label=loop_label)
@@ -301,9 +317,10 @@ class TACGenerator(ASTVisitor):
     
     def visit_proc_call(self, cmd: ProcCallCommand):
         """Visit ProcCallCommand - generate TAC for procedure call"""
-        # Push parameters (for now, just call - parameter passing may need more work)
+        # Push parameters - qualify argument names if they're local variables/parameters
         for arg in cmd.args:
-            self.emit(TACOp.PARAM, arg1=arg)
+            qualified_arg = self.qualify_variable_name(arg)
+            self.emit(TACOp.PARAM, arg1=qualified_arg)
         
         # Call procedure
         self.emit(TACOp.CALL, arg1=cmd.name)
@@ -311,10 +328,12 @@ class TACGenerator(ASTVisitor):
     def visit_read(self, cmd: ReadCommand):
         """Visit ReadCommand - generate TAC for READ statement"""
         if isinstance(cmd.identifier, Identifier):
-            self.emit(TACOp.READ, arg1=cmd.identifier.name)
+            qualified_name = self.qualify_variable_name(cmd.identifier.name)
+            self.emit(TACOp.READ, arg1=qualified_name)
         elif isinstance(cmd.identifier, Access):
+            qualified_name = self.qualify_variable_name(cmd.identifier.name)
             index_temp = self.visit_value(cmd.identifier.index)
-            self.emit(TACOp.READ_ARRAY, arg1=cmd.identifier.name, arg2=index_temp)
+            self.emit(TACOp.READ_ARRAY, arg1=qualified_name, arg2=index_temp)
         else:
             raise ValueError(f"Unsupported identifier type: {type(cmd.identifier)}")
     
@@ -362,14 +381,48 @@ class TACGenerator(ASTVisitor):
             raise ValueError(f"Unsupported value type: {type(value.value)}")
     
     def visit_identifier(self, node: Identifier) -> str:
-        """Visit Identifier - return variable name"""
-        return node.name
+        """Visit Identifier - return qualified variable name (local variables are prefixed with procedure name)"""
+        return self.qualify_variable_name(node.name)
+    
+    def qualify_variable_name(self, name: str) -> str:
+        """Qualify variable name based on scope.
+        
+        Local variables in procedures are qualified with the procedure name
+        (e.g., 'x' in procedure 'foo' becomes 'foo.x') to avoid conflicts
+        with global variables with the same name.
+        
+        Args:
+            name: Variable name from AST
+            
+        Returns:
+            Qualified variable name (procedure_name.var_name for locals, var_name for globals)
+        """
+        # If no symbol table or not in a procedure, return name as-is
+        if not self.symbol_table or not self.current_procedure:
+            return name
+        
+        # Check if this variable is in the current procedure's symbol table
+        # (local variables, parameters, or FOR iterators in procedure scope)
+        if (self.current_procedure in self.symbol_table.procedure_symbols and
+            name in self.symbol_table.procedure_symbols[self.current_procedure]):
+            # It's a local variable or parameter - qualify it
+            return f"{self.current_procedure}.{name}"
+        
+        # Check if it's a FOR iterator in procedure scope
+        symbol = self.symbol_table.lookup(name)
+        if symbol and symbol.is_for_iterator() and symbol.scope_level == 1:
+            # FOR iterator in procedure scope - qualify it
+            return f"{self.current_procedure}.{name}"
+        
+        # Global variable or not found - return as-is
+        return name
     
     def visit_access(self, node: Access) -> str:
         """Visit Access - generate TAC for array access"""
+        qualified_name = self.qualify_variable_name(node.name)
         index_temp = self.visit_value(node.index)
         result_temp = self.new_temp()
-        self.emit(TACOp.LOAD_ARRAY, arg1=node.name, arg2=index_temp, result=result_temp)
+        self.emit(TACOp.LOAD_ARRAY, arg1=qualified_name, arg2=index_temp, result=result_temp)
         return result_temp
     
     def generate_condition_jump(self, condition: Condition, true_label: str, false_label: str):

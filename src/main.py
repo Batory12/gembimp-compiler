@@ -7,7 +7,7 @@ from vm_generator import VMGenerator
 import sys
 import os
 
-DEBUG = False
+DEBUG = True
 def main(debug: bool, input_file: str, output_file: str):
     with open(input_file, 'r') as f:
         text = f.read()
@@ -24,8 +24,8 @@ def main(debug: bool, input_file: str, output_file: str):
                 print(error, file=sys.stderr)
             sys.exit(1)
         
-        # Generate TAC
-        tac_gen = TACGenerator()
+        # Generate TAC (pass symbol table for variable name qualification)
+        tac_gen = TACGenerator(symbol_table=analyzer.symbol_table)
         tac_instructions = tac_gen.generate(ast)
         
         # Generate VM code (pass symbol table for array size information)

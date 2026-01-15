@@ -132,7 +132,22 @@ class SymbolTable:
             self.for_iterators.pop()
     
     def add_variable(self, name: str, line: Optional[int] = None) -> Symbol:
-        """Add a variable to the current scope"""
+        """Add a variable to the current scope
+        
+        Variables declared in procedures are local and shadow (hide) any global variables
+        with the same name. This allows procedures to have local variables with the same
+        name as global variables.
+        
+        Args:
+            name: Variable name
+            line: Line number for error reporting
+            
+        Returns:
+            The created symbol
+            
+        Raises:
+            SymbolTableError: If variable already declared in current scope
+        """
         if self.current_procedure is None:
             # Global variable
             if name in self.global_symbols:
@@ -146,7 +161,7 @@ class SymbolTable:
             self.global_symbols[name] = symbol
             return symbol
         else:
-            # Local variable in procedure
+            # Local variable in procedure (shadows global variables with same name)
             if name in self.procedure_symbols[self.current_procedure]:
                 raise SymbolTableError(
                     f"Variable '{name}' already declared in procedure '{self.current_procedure}'",
@@ -163,6 +178,10 @@ class SymbolTable:
     
     def add_array(self, name: str, start: int, end: int, line: Optional[int] = None) -> Symbol:
         """Add an array to the current scope
+        
+        Arrays declared in procedures are local and shadow (hide) any global arrays
+        with the same name. This allows procedures to have local arrays with the same
+        name as global arrays.
         
         Args:
             name: Array name
@@ -195,7 +214,7 @@ class SymbolTable:
             self.global_symbols[name] = symbol
             return symbol
         else:
-            # Local array in procedure
+            # Local array in procedure (shadows global arrays with same name)
             if name in self.procedure_symbols[self.current_procedure]:
                 raise SymbolTableError(
                     f"Array '{name}' already declared in procedure '{self.current_procedure}'",
@@ -284,10 +303,13 @@ class SymbolTable:
     def lookup(self, name: str) -> Optional[Symbol]:
         """Look up a symbol in the current scope
         
-        Search order:
+        Search order (implements variable shadowing):
         1. FOR loop iterators (most local)
-        2. Current procedure parameters and locals
+        2. Current procedure parameters and locals (shadows globals)
         3. Global symbols
+        
+        Variables declared in procedures shadow (hide) global variables with the same name.
+        Local variables are always found before global variables.
         
         Returns:
             Symbol if found, None otherwise
@@ -297,11 +319,11 @@ class SymbolTable:
             if iterator.name == name:
                 return iterator
         
-        # Then check current procedure scope
+        # Then check current procedure scope (local variables and parameters shadow globals)
         if self.current_procedure and name in self.procedure_symbols[self.current_procedure]:
             return self.procedure_symbols[self.current_procedure][name]
         
-        # Finally check global scope
+        # Finally check global scope (only if not shadowed by local)
         if name in self.global_symbols:
             return self.global_symbols[name]
         
@@ -385,6 +407,10 @@ class SymbolTable:
                             line: Optional[int] = None) -> Symbol:
         """Check if a variable can be used in the current context
         
+        Implements variable shadowing: local variables in procedures shadow global variables.
+        Variables used in procedures must be parameters, local variables, or FOR iterators.
+        Global variables cannot be accessed from procedures (they are shadowed by locals).
+        
         Args:
             name: Variable name
             is_read: Whether variable is being read
@@ -399,16 +425,24 @@ class SymbolTable:
         """
         symbol = self.lookup_required(name, line)
         
-        # Rule 3: Variables used in procedure must be parameters or local
-        if self.current_procedure and not symbol.is_parameter():
-            # Check if it's a local variable
-            if name not in self.procedure_symbols[self.current_procedure]:
-                # Not a parameter and not local - check if it's global
-                if name in self.global_symbols:
-                    raise SymbolTableError(
-                        f"Variable '{name}' used in procedure '{self.current_procedure}' must be a parameter or local variable",
-                        line
-                    )
+        # Rule 3: Variables used in procedure must be parameters or local (not global)
+        # Since lookup() checks procedure scope before global scope, if we're in a procedure
+        # and the symbol found is global (scope_level == 0 and not a procedure definition),
+        # it means there's no local variable shadowing it, which is an error.
+        if self.current_procedure:
+            # Check if symbol is a global variable (not a procedure definition)
+            is_global_var = (symbol.scope_level == 0 and 
+                           not symbol.is_procedure() and 
+                           name in self.global_symbols and
+                           name not in self.procedure_symbols[self.current_procedure])
+            
+            if is_global_var:
+                # Global variable accessed from procedure - not allowed
+                # (local variables with same name would shadow it)
+                raise SymbolTableError(
+                    f"Variable '{name}' used in procedure '{self.current_procedure}' must be a parameter or local variable",
+                    line
+                )
         
         # Rule 5: Check parameter type constraints
         if symbol.is_parameter():
