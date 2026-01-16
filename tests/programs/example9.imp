@@ -11,7 +11,6 @@ IN
   FOR i FROM 1 TO n DO
     s[i]:=p*i;
     p:=s[i];
-    WRITE s[i];
   ENDFOR
 END
 

@@ -102,10 +102,13 @@ class VMGenerator:
         self.arg_stack = []  # Stack of parameters for procedure calls
         
     def get_memory_location(self, var_name: str) -> int:
-        """Get memory location for a variable, allocating if needed."""
+        """Get memory location for a variable, allocating if needed.
+        Arrays should be pre-allocated before program start, so this only allocates regular variables."""
         if var_name not in self.variable_map:
             symbol = self.symbols.get(var_name)
             if symbol and symbol.is_array():
+                # Arrays should be pre-allocated, but if we encounter one here,
+                # it might be a parameter - allocate just the address storage
                 self.allocate_array(var_name)
             else:
                 self.variable_map[var_name] = self.next_memory
@@ -117,18 +120,26 @@ class VMGenerator:
         
         Returns (start_index, size) where size = end - start + 1
         If symbol table is not available or array not found, returns (0, 10).
+        Handles both qualified (proc_name.array_name) and unqualified names.
         """
         if not self.symbol_table:
             return (0, 10)  # Default fallback
         
-        # Try to find array in global symbols
+        # First try to find in self.symbols (which has qualified names for procedure symbols)
+        symbol = self.symbols.get(array_name)
+        if symbol and symbol.is_array():
+            if symbol.array_start is not None and symbol.array_end is not None:
+                size = symbol.array_end - symbol.array_start + 1
+                return (symbol.array_start, size)
+        
+        # Fallback: try to find array in global symbols (unqualified name)
         symbol = self.symbol_table.global_symbols.get(array_name)
         if symbol and symbol.is_array():
             if symbol.array_start is not None and symbol.array_end is not None:
                 size = symbol.array_end - symbol.array_start + 1
                 return (symbol.array_start, size)
         
-        # Try to find in procedure symbols
+        # Fallback: try to find in procedure symbols by unqualified name
         for proc_symbols in self.symbol_table.procedure_symbols.values():
             symbol = proc_symbols.get(array_name)
             if symbol and symbol.is_array():
@@ -147,6 +158,29 @@ class VMGenerator:
         """
         _, size = self.get_array_info(array_name)
         return size
+    
+    def pre_allocate_arrays(self):
+        """Pre-allocate space for all arrays before program start.
+        Skips array parameters (those with array_start/array_end as None)."""
+        if not self.symbol_table:
+            return
+        
+        # Allocate global arrays
+        for name, symbol in self.symbol_table.global_symbols.items():
+            if symbol.is_array():
+                # Only allocate if it has bounds (not a parameter)
+                if symbol.array_start is not None and symbol.array_end is not None:
+                    self.allocate_array(name)
+        
+        # Allocate local arrays in procedures
+        for proc_name, proc_symbols in self.symbol_table.procedure_symbols.items():
+            for name, symbol in proc_symbols.items():
+                if symbol.is_array():
+                    # Only allocate if it has bounds (not a parameter)
+                    if symbol.array_start is not None and symbol.array_end is not None:
+                        # Use qualified name for procedure-local arrays
+                        qualified_name = f"{proc_name}.{name}"
+                        self.allocate_array(qualified_name)
     
     def is_constant(self, value: Union[str, int]) -> bool:
         """Check if a value is a numeric constant."""
@@ -248,6 +282,9 @@ class VMGenerator:
         self.next_memory = 0
         self.label_map = {}
         self.jump_patches = []  # List of (instruction_index, label_name) tuples
+        
+        # Pre-allocate all arrays before program start
+        self.pre_allocate_arrays()
         
         for instr in tac_instructions:
             if instr.op == TACOp.LABEL:
@@ -764,6 +801,18 @@ class VMGenerator:
             self.emit(VMInstruction(VMInstructionType.SWP, r))
             self.emit(VMInstruction(VMInstructionType.STORE, self.get_memory_location(r_result), r_result))
     def allocate_array(self, array_name: str):
+        """Allocate space for an array. Skips allocation for parameters (array_start/array_end is None)."""
+        # Check if this is a parameter - parameters have array_start and array_end as None
+        symbol = self.symbols.get(array_name)
+        if symbol and symbol.is_array():
+            # If it's a parameter, it has None for array_start and array_end - don't allocate
+            if symbol.array_start is None or symbol.array_end is None:
+                # This is a parameter, just allocate a single memory location for the address
+                if array_name not in self.variable_map:
+                    self.variable_map[array_name] = self.next_memory
+                    self.next_memory += 1
+                return
+        
         # Get array base address and allocate space based on actual array size
         array_base_key = array_name
         if array_base_key not in self.variable_map:
@@ -780,17 +829,11 @@ class VMGenerator:
         # Compute address: array_base + index (base already includes start offset)
         # Load index into rb, compute address in rc, use RLOAD
         
-        # Get array base address and allocate space based on actual array size
+        # Get array base address (should already be allocated)
         array_base_key = array_name
         if array_base_key not in self.variable_map:
-            array_size = self.get_array_size(array_name)
-            array_start, _ = self.get_array_info(array_name)
-            # Ensure base address is non-negative: adjust next_memory if needed
-            if self.next_memory < array_start:
-                self.next_memory = array_start
-            # Base address already includes the start index offset
-            self.variable_map[array_base_key] = self.next_memory - array_start
-            self.next_memory += array_size  # Reserve space for array based on actual size
+            # If not found, it might be a parameter - allocate just the address storage
+            self.allocate_array(array_name)
         
         array_base_addr = self.variable_map[array_base_key]
         
@@ -822,17 +865,11 @@ class VMGenerator:
         # Compute address: array_base + index (base already includes start offset)
         # Load value into ra, compute address in rc, use RSTORE
         
-        # Get array base address and allocate space based on actual array size
+        # Get array base address (should already be allocated)
         array_base_key = array_name
         if array_base_key not in self.variable_map:
-            array_size = self.get_array_size(array_name)
-            array_start, _ = self.get_array_info(array_name)
-            # Ensure base address is non-negative: adjust next_memory if needed
-            if self.next_memory < array_start:
-                self.next_memory = array_start
-            # Base address already includes the start index offset
-            self.variable_map[array_base_key] = self.next_memory - array_start
-            self.next_memory += array_size  # Reserve space for array based on actual size
+            # If not found, it might be a parameter - allocate just the address storage
+            self.allocate_array(array_name)
         
         array_base_addr = self.variable_map[array_base_key]
         
