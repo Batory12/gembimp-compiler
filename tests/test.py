@@ -17,10 +17,6 @@ def test_compilation(file: Path):
         timeout=5
     )
     expected_output = expected_file.read_text()
-    print("Expected Output:")
-    print(expected_output)
-    print("Actual Output:")
-    print(result.stdout.decode())
     assert "\n".join(filter(lambda s: ">" in s, result.stdout.decode().split("\n"))) == expected_output
 
 
