@@ -1,9 +1,0 @@
-# Binarna postać liczby
-PROGRAM IS
-n
-IN
-n := 100;
-FOR i FROM 1 TO n DO
-WRITE i;
-ENDFOR
-END

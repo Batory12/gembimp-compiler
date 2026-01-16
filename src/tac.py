@@ -176,7 +176,7 @@ class TACGenerator(ASTVisitor):
             cmd.accept(self)
         
         # Return statement
-        self.emit(TACOp.RET)
+        self.emit(TACOp.RET, proc_label)
         
         # Restore previous procedure context
         self.current_procedure = prev_procedure

@@ -97,12 +97,19 @@ class VMGenerator:
         
         # Symbol table for array size information
         self.symbol_table = symbol_table
+        self.symbols = self.symbol_table.get_all_symbols()
+
+        self.arg_stack = []  # Stack of parameters for procedure calls
         
     def get_memory_location(self, var_name: str) -> int:
         """Get memory location for a variable, allocating if needed."""
         if var_name not in self.variable_map:
-            self.variable_map[var_name] = self.next_memory
-            self.next_memory += 1
+            symbol = self.symbols.get(var_name)
+            if symbol and symbol.is_array():
+                self.allocate_array(var_name)
+            else:
+                self.variable_map[var_name] = self.next_memory
+                self.next_memory += 1
         return self.variable_map[var_name]
     
     def get_array_info(self, array_name: str) -> tuple[int, int]:
@@ -191,12 +198,37 @@ class VMGenerator:
             # Variable - load from memory
             mem_loc = self.get_memory_location(source)
             self.emit(VMInstruction(VMInstructionType.LOAD, mem_loc))
+            if self.symbol_table:
+                symbol = self.symbols.get(source)
+                if symbol and symbol.is_parameter():
+                    # Load address from variable, then load value from that address
+                    self.emit(VMInstruction(VMInstructionType.RLOAD, Register.A))
     
     def store_from_ra(self, dest: str):
-        """Store ra register to a variable."""
+        """Store ra register to a variable.
+        Clears A, B
+        """
+
         mem_loc = self.get_memory_location(dest)
+        if self.symbol_table:
+            symbol = self.symbols.get(dest)
+            if symbol and symbol.is_parameter():
+                # Store to address stored in variable
+                self.emit(VMInstruction(VMInstructionType.SWP, Register.B))
+                self.emit(VMInstruction(VMInstructionType.LOAD, mem_loc))
+                self.emit(VMInstruction(VMInstructionType.SWP, Register.B))
+                self.emit(VMInstruction(VMInstructionType.RSTORE, Register.B))
+                return
         self.emit(VMInstruction(VMInstructionType.STORE, mem_loc, dest))
-    
+    def store_reference(self, dest: str):
+        """Change address stored in a reference parameter.
+        """
+
+        mem_loc = self.get_memory_location(dest)
+        if self.symbol_table:
+            symbol = self.symbols.get(dest)
+            if symbol and symbol.is_parameter():
+                self.emit(VMInstruction(VMInstructionType.STORE, mem_loc, dest))
     def load_to_rb(self, source: Union[str, int]):
         """Load a value into rb register."""
         if self.is_constant(source):
@@ -204,8 +236,7 @@ class VMGenerator:
             for inst in self.build_constant(Register.B, const_val):
                 self.emit(inst)
         else:
-            mem_loc = self.get_memory_location(source)
-            self.emit(VMInstruction(VMInstructionType.LOAD, mem_loc))
+            self.load_to_ra(source)
             self.emit(VMInstruction(VMInstructionType.SWP, Register.B))  # Move to rb
     
     def generate(self, tac_instructions: List[TACInstruction]) -> str:
@@ -229,8 +260,9 @@ class VMGenerator:
                         self.emit(VMInstruction(VMInstructionType.HALT))
                         self.halt_inserted = True
                     self.label_map[instr.label] = self.instruction_count
-                    # we store return address in Register.H
-                    self.emit(VMInstruction(VMInstructionType.SWP, Register.H, instr.label))
+                    # we store return address in their own memory location
+                    return_addr_mem = self.get_memory_location(f"_retaddr_{instr.label}")
+                    self.emit(VMInstruction(VMInstructionType.STORE, return_addr_mem))
                 else:
                     self.label_map[instr.label] = self.instruction_count
             else:
@@ -310,14 +342,20 @@ class VMGenerator:
             
         elif instr.op == TACOp.CALL:
             proc_label = f'proc_{instr.arg1}'
+            for param in reversed(self.symbols[instr.arg1].param_names):
+                arg = self.arg_stack.pop()
+                self.load_address(arg)
+                self.store_reference(f"{instr.arg1}.{param}", )
+
             # CALL j means: ra <- k + 1, k <- j
             self.emit(VMInstruction(VMInstructionType.CALL, 0, proc_label))  # Placeholder, will patch
             self.add_jump_patch(proc_label)
             
         elif instr.op == TACOp.RET:
             # RET (return from procedure)
-            # get return address from Register.H and return
-            self.emit(VMInstruction(VMInstructionType.SWP, Register.H))
+            # get return address from saved address for current procedure
+            ret_addr = self.get_memory_location(f"_retaddr_{instr.result}")
+            self.emit(VMInstruction(VMInstructionType.LOAD, ret_addr))
             self.emit(VMInstruction(VMInstructionType.RTRN))
             
         elif instr.op == TACOp.LOAD_ARRAY:
@@ -344,12 +382,20 @@ class VMGenerator:
             self.generate_array_store(instr.arg1, instr.arg2, temp_var)
             
         elif instr.op == TACOp.PARAM:
-            # PARAM arg1 - parameter passing
-            # Parameters are passed via variables, so no code needed here
+            self.arg_stack.append(instr.arg1)
             pass
             
         else:
             raise ValueError(f"Unsupported TAC operation: {instr.op}")
+    def load_address(self, source: Union[str, int]):
+        """Load the address of a variable into ra register."""
+        if self.is_constant(source):
+            raise ValueError("Cannot load address of a constant")
+        symbol = self.symbols.get(source)
+        mem_loc = self.get_memory_location(source)
+        self.load_to_ra(mem_loc)
+        if symbol and symbol.is_parameter():
+            self.emit(VMInstruction(VMInstructionType.RLOAD, Register.A))
     def is_procedure_label(self, label: str) -> bool:
         """Check if a label is a procedure label."""
         return label.startswith('proc_')
@@ -717,14 +763,25 @@ class VMGenerator:
         if r_result is not None:
             self.emit(VMInstruction(VMInstructionType.SWP, r))
             self.emit(VMInstruction(VMInstructionType.STORE, self.get_memory_location(r_result), r_result))
-    
+    def allocate_array(self, array_name: str):
+        # Get array base address and allocate space based on actual array size
+        array_base_key = array_name
+        if array_base_key not in self.variable_map:
+            array_size = self.get_array_size(array_name)
+            array_start, _ = self.get_array_info(array_name)
+            # Ensure base address is non-negative: adjust next_memory if needed
+            if self.next_memory < array_start:
+                self.next_memory = array_start
+            # Base address already includes the start index offset
+            self.variable_map[array_base_key] = self.next_memory - array_start
+            self.next_memory += array_size
     def generate_array_load(self, array_name: str, index: Union[str, int], result: str):
         """Generate code for array load: result = array_name[index]."""
         # Compute address: array_base + index (base already includes start offset)
         # Load index into rb, compute address in rc, use RLOAD
         
         # Get array base address and allocate space based on actual array size
-        array_base_key = f'{array_name}_base'
+        array_base_key = array_name
         if array_base_key not in self.variable_map:
             array_size = self.get_array_size(array_name)
             array_start, _ = self.get_array_info(array_name)
@@ -745,12 +802,16 @@ class VMGenerator:
         for inst in self.build_constant(Register.C, array_base_addr):
             self.emit(inst)
         
+        symbol = self.symbols.get(array_name)
+        if symbol and symbol.is_parameter():
+            # Load base address from parameter
+            self.emit(VMInstruction(VMInstructionType.RLOAD, Register.C))
+        else:
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # rc -> ra
+
         # Now add index to base: rc = rc + rb
-        self.emit(VMInstruction(VMInstructionType.SWP, Register.A))  # Save ra
-        self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # rc -> ra
         self.emit(VMInstruction(VMInstructionType.ADD, Register.B))  # ra = rc + rb
         self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # ra -> rc
-        self.emit(VMInstruction(VMInstructionType.SWP, Register.A))  # Restore ra
         
         # Now use RLOAD: ra <- prc
         self.emit(VMInstruction(VMInstructionType.RLOAD, Register.C))
@@ -762,7 +823,7 @@ class VMGenerator:
         # Load value into ra, compute address in rc, use RSTORE
         
         # Get array base address and allocate space based on actual array size
-        array_base_key = f'{array_name}_base'
+        array_base_key = array_name
         if array_base_key not in self.variable_map:
             array_size = self.get_array_size(array_name)
             array_start, _ = self.get_array_info(array_name)
@@ -784,11 +845,14 @@ class VMGenerator:
             self.emit(inst)
         
         # Now add index to base: rc = rc + rb
-        self.emit(VMInstruction(VMInstructionType.SWP, Register.A))  # Save ra
-        self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # rc -> ra
+        symbol = self.symbols.get(array_name)
+        if symbol and symbol.is_parameter():
+            # Load base address from parameter
+            self.emit(VMInstruction(VMInstructionType.RLOAD, Register.C))
+        else:
+            self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # rc -> ra
         self.emit(VMInstruction(VMInstructionType.ADD, Register.B))  # ra = rc + rb
         self.emit(VMInstruction(VMInstructionType.SWP, Register.C))  # ra -> rc
-        self.emit(VMInstruction(VMInstructionType.SWP, Register.A))  # Restore ra
         
         # Load value into ra
         self.load_to_ra(value)

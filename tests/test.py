@@ -3,7 +3,7 @@ import pytest
 from pathlib import Path
 import subprocess
 programs = Path(__file__).parent.joinpath("programs").iterdir()
-@pytest.mark.parametrize("file", programs)
+@pytest.mark.parametrize("file", programs, ids=lambda p: p.name)
 def test_compilation(file: Path):
     name = file.name
     input_file = Path(__file__).parent.joinpath("inputs", name)
@@ -11,7 +11,7 @@ def test_compilation(file: Path):
     temp_name = "temp.vm"
     main(debug=False, input_file=str(file), output_file=temp_name)
     result = subprocess.run(
-        ["bin/maszyna-wirtualna", temp_name],
+        ["bin/maszyna-wirtualna-cln", temp_name],
         stdin=open(input_file),
         capture_output=True,
         timeout=5
